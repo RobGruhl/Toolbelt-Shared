@@ -1,0 +1,93 @@
+{
+  "name": "claude-ding",
+  "aliases": ["ding"],
+  "kind": "tool",
+  "description": "Audio notifications for Claude Code hooks: 17 synthesized WAVs and two afplay scripts (celebratory on Stop, question on AskUserQuestion / ExitPlanMode / PermissionRequest); plays sound on this Mac and writes nothing",
+  "hits": "Claude Code hooks on this Mac (afplay; local audio only)",
+  "surface": "two bash scripts the hooks in ~/.claude/settings.json run; every verb is read tier — a script picks a WAV and plays it through afplay; no file, setting, or network is touched. CLAUDE_DING_MUTE=1 is the dry run, CLAUDE_DING_VOLUME the only knob",
+  "readme_label": "`tools/claude-ding`",
+  "platforms": ["darwin"],
+  "origin": {
+    "repo": "https://github.com/RobGruhl/claude-ding.git",
+    "vendored_commit": "0b8de40",
+    "vendored_at": "2026-08-22",
+    "note": "Source was dirty at vendor time: sounds/play-random.sh and sounds/play-random-question.sh had an uncommitted volume change (0.2 -> 0.1) that was already live in ~/.claude/sounds, so that value was carried by hand. Both scripts are rewritten here: sounds resolve relative to the script instead of a hard-coded ~/.claude/sounds path (so the belt copy works through the symlink or directly), CLAUDE_DING_VOLUME and CLAUDE_DING_MUTE were added. README install section replaced by toolbelt setup; tmp/ and .DS_Store not vendored."
+  },
+  "runtime": {
+    "package_manager": "none"
+  },
+  "install": [
+    {
+      "action": "symlink",
+      "from": "~/.claude/sounds",
+      "to": "{TOOLBELT}/tools/claude-ding/sounds",
+      "description": "Point ~/.claude/sounds at THIS tree's sounds/ so the hooks in ~/.claude/settings.json play the belt's copy",
+      "why": "the hook commands are ~/.claude/sounds/play-random*.sh; a real directory there is a hand-copied snapshot that drifts from the belt every time a sound or volume changes",
+      "yes": "~/.claude/sounds -> {TOOLBELT}/tools/claude-ding/sounds; an existing real directory is renamed to ~/.claude/sounds.pre-toolbelt (never deleted), a stale link is replaced, a correct one is left alone; settings.json is not touched",
+      "no": "skipped; the hooks keep playing whatever ~/.claude/sounds holds today; the doctor keeps warning"
+    }
+  ],
+  "entrypoints": {
+    "cli": "sounds/play-random.sh"
+  },
+  "env": [
+    {
+      "name": "CLAUDE_DING_VOLUME",
+      "required": false,
+      "secret": false,
+      "description": "afplay volume 0.0-1.0 for both scripts; default 0.1 in the script"
+    },
+    {
+      "name": "CLAUDE_DING_MUTE",
+      "required": false,
+      "secret": false,
+      "description": "Set to any value to print the chosen file and play nothing — the dry run; the smoke test exports it"
+    }
+  ],
+  "auth": {
+    "principal": "none",
+    "flow": "none — afplay plays a local file as the operator; no credential, cache, or network"
+  },
+  "safeguards": [
+    "Read-only by construction: sounds/play-random.sh and sounds/play-random-question.sh contain one afplay call each and no write of any kind; there is no verb that edits settings.json, copies files, or touches the network (SENSIBILITIES #1)",
+    "Dry run: CLAUDE_DING_MUTE=1 makes either script print the file it would play and exit 0 without opening the audio device (SENSIBILITIES #5)",
+    "Conservative default volume: 0.1 is the script constant; CLAUDE_DING_VOLUME overrides per invocation and nothing persists it (SENSIBILITIES #3)",
+    "Install touches one path outside the tree — the symlink action renames a real ~/.claude/sounds to .pre-toolbelt and never deletes; ~/.claude/settings.json is read by nothing here and written by nothing here (SENSIBILITIES #10)",
+    "Nothing secret in the tree: WAVs and two scripts; tmp/ and .DS_Store excluded (SENSIBILITIES #11)"
+  ],
+  "verbs": [
+    { "name": "play-random.sh", "tier": "read", "surface": "cli", "note": "Stop hook: one of voila/sparkle/fanfare/crab through afplay at CLAUDE_DING_VOLUME (0.1)" },
+    { "name": "play-random-question.sh", "tier": "read", "surface": "cli", "note": "AskUserQuestion / ExitPlanMode / PermissionRequest hooks: one of question1-4 through afplay" },
+    { "name": "hook registration in settings.json", "tier": "never", "surface": "cli", "note": "no verb edits ~/.claude/settings.json; the operator adds the hook entries by hand (README shows the block)" }
+  ],
+  "checks": [
+    { "use": "files.exists", "path": "/usr/bin/afplay", "label": "/usr/bin/afplay present (ships with macOS)" },
+    {
+      "use": "files.symlink_valid",
+      "path": "~/.claude/sounds",
+      "target": "{TOOLBELT}/tools/claude-ding/sounds",
+      "severity": "warn",
+      "label": "~/.claude/sounds resolves to this tree's sounds/",
+      "fix": "Run: {TOOLBELT}/bin/toolbelt setup claude-ding — links ~/.claude/sounds here (a real dir is renamed to sounds.pre-toolbelt)"
+    }
+  ],
+  "smoke_test": {
+    "command": "bash test/smoke.sh",
+    "expect": "both scripts pass bash -n and are executable; at least one .wav in sounds/; a CLAUDE_DING_MUTE=1 run of each script names an existing file — no audio is played"
+  },
+  "do_not_vendor": [
+    "tmp/",
+    ".DS_Store"
+  ],
+  "core": false,
+  "risk": {
+    "read_only": true,
+    "destructive": false,
+    "idempotent": true,
+    "open_world": false,
+    "worst_case": "a short sound plays on this Mac's speakers at volume 0.1 (or whatever CLAUDE_DING_VOLUME says) when a hook fires; toolbelt setup renames an existing ~/.claude/sounds directory to .pre-toolbelt"
+  },
+  "systems": [
+    { "name": "Claude Code hook notifications (sound)", "read": "CLAUDE_DING_MUTE=1 sounds/play-random.sh", "preferred": true }
+  ]
+}

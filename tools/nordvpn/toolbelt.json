@@ -1,0 +1,156 @@
+{
+  "name": "nordvpn",
+  "kind": "tool",
+  "description": "NordVPN on macOS through Tunnelblick (OpenVPN, no sudo): status and server lists are free; connect/disconnect preview until --yes and leave an audit line; service credentials from env, a 600-mode file, or the Keychain — never the tree",
+  "hits": "NordVPN (via Tunnelblick on this Mac)",
+  "surface": "CLI. `status`/`servers`/`countries`/`configs` read; `connect`/`disconnect` print a preview and exit 0 until re-run with `--yes` (flag tier: the tunnel is this machine's own and reversible), then append to `data/audit.log`; no account, billing, or server-side verb exists",
+  "platforms": ["darwin"],
+  "origin": {
+    "repo": "https://github.com/RobGruhl/hello-nordvpn.git",
+    "vendored_commit": "fa1780a",
+    "vendored_at": "2026-08-22",
+    "note": "hello-* workshop repo; the belt added the --yes gate, previews, audit log, hostname validation, the credential stores, moved the staged .tblk bundles out of the tree, and made `status` stop launching Tunnelblick. Upstream gitignored poetry.lock; the belt's lockfile is its own"
+  },
+  "runtime": {
+    "python": ">=3.13",
+    "package_manager": "poetry"
+  },
+  "install": [
+    {
+      "run": "poetry env use python3.13 && poetry install",
+      "description": "Create the in-project .venv and install httpx, typer, pydantic, rich, python-dotenv from poetry.lock",
+      "why": "the CLI imports these; poetry.toml pins the venv to tools/nordvpn/.venv so nothing is installed globally",
+      "yes": "tools/nordvpn/.venv is created from the committed lockfile; no call to NordVPN is made",
+      "no": "skipped; every `poetry run nordvpn` fails on import until you run it"
+    },
+    {
+      "action": "ensure_dir",
+      "path": "~/.config/toolbelt/nordvpn/configs",
+      "description": "Create the directory where downloaded OpenVPN bundles are staged before Tunnelblick imports them",
+      "why": "each .tblk bundle embeds the service credentials, so it must live outside the repo",
+      "yes": "mkdir -p ~/.config/toolbelt/nordvpn/configs; nothing else changes",
+      "no": "skipped; connect --yes creates it on first use anyway"
+    }
+  ],
+  "entrypoints": {
+    "cli": "poetry run nordvpn"
+  },
+  "env": [
+    {
+      "name": "NORD_USER",
+      "required": false,
+      "secret": true,
+      "description": "NordVPN OpenVPN service username (from the manual-configuration page, not the account login). Alternatives: ~/.config/toolbelt/nordvpn.env (mode 600) or Keychain item toolbelt-nordvpn/NORD_USER. Needed only by connect"
+    },
+    {
+      "name": "NORD_PASS",
+      "required": false,
+      "secret": true,
+      "description": "NordVPN OpenVPN service password. Same alternatives as NORD_USER"
+    },
+    {
+      "name": "NORDVPN_CONFIG_DIR",
+      "required": false,
+      "secret": false,
+      "description": "Where downloaded .ovpn files and credential-bearing .tblk bundles are staged (default ~/.config/toolbelt/nordvpn/configs, mode 700)"
+    },
+    {
+      "name": "NORDVPN_AUDIT_FILE",
+      "required": false,
+      "secret": false,
+      "description": "Audit log path (default tools/nordvpn/data/audit.log, mode 600)"
+    }
+  ],
+  "auth": {
+    "principal": "user",
+    "flow": "The operator's own NordVPN service credentials, generated once on the NordVPN dashboard; the public server API needs no token. Read from NORD_USER/NORD_PASS, else ~/.config/toolbelt/nordvpn.env (600 enforced), else Keychain toolbelt-nordvpn, else the deprecated in-tree .env (warned). Never printed",
+    "login": "security add-generic-password -s toolbelt-nordvpn -a NORD_USER -w <username> && security add-generic-password -s toolbelt-nordvpn -a NORD_PASS -w <password>",
+    "identity": "poetry run nordvpn setup",
+    "caches": [
+      {
+        "path": "~/.config/toolbelt/nordvpn.env",
+        "class": "static",
+        "store": "file",
+        "note": "optional dotenv file with NORD_USER/NORD_PASS; refused unless mode 600",
+        "revoke": "Regenerate the service credentials on https://my.nordaccount.com/dashboard/nordvpn/manual-configuration/ and delete the file"
+      },
+      {
+        "path": "~/.config/toolbelt/nordvpn/configs/",
+        "class": "static",
+        "store": "file",
+        "note": "staged .tblk bundles, each with a 600-mode .pass file holding the service credentials; dir 700",
+        "revoke": "rm -rf ~/.config/toolbelt/nordvpn/configs"
+      },
+      {
+        "path": "~/Library/Application Support/Tunnelblick/Configurations/",
+        "class": "static",
+        "store": "vendor",
+        "note": "Tunnelblick's own copy of every imported bundle, credentials included",
+        "revoke": "delete the configuration in Tunnelblick's VPN Details window"
+      }
+    ]
+  },
+  "safeguards": [
+    "Read-first: status, servers, countries, configs and setup mutate nothing; only connect and disconnect change the tunnel, and no verb touches the NordVPN account, billing, or any server-side state (SENSIBILITIES #1)",
+    "connect and disconnect are flag-gated (cli.py, `yes: YesOpt`): a bare call prints the preview — server, whether a credential-bearing bundle will be installed, what is replaced, the timeout, the undo — and exits 0 having changed nothing; --yes is always honored because the tunnel is this machine's own and `disconnect --yes` undoes it (SENSIBILITIES #2)",
+    "Every mutation appends `[nordvpn audit] <ts> verb= target= result=` to stderr and data/audit.log (audit.py, file 600, dir 700): connect, disconnect, and the config install connect performs (SENSIBILITIES #7)",
+    "Ceilings are constants in cli.py: MAX_LIMIT 50 on `servers --limit` (refused above, not lowered), DEFAULT_LIMIT 10, CONNECT_TIMEOUT_S 30 (SENSIBILITIES #3)",
+    "Server hostnames and country codes are validated before use (config_manager.normalize_hostname, cli._country_code); a config name with a quote never reaches the AppleScript string TunnelblickController.connect builds",
+    "Credentials resolve env → ~/.config/toolbelt/nordvpn.env → Keychain → in-tree .env (credentials.get_credentials); a group/world-readable file is refused, the in-tree file is warned on, and no path prints a value — Credentials.__repr__ masks both (SENSIBILITIES #6, #11)",
+    "Downloaded bundles embed the service credentials, so ConfigManager stages them under ~/.config/toolbelt/nordvpn/configs (mode 700, .pass 600), never under the tool dir (SENSIBILITIES #11)",
+    "Degraded modes are named: status reports 'Tunnelblick not running' without launching it, `--local` skips the off-host IP lookups, and a failed ipify/ipinfo call prints 'unavailable' instead of failing the read (SENSIBILITIES #8)"
+  ],
+  "verbs": [
+    { "name": "status", "tier": "read", "surface": "cli", "note": "Tunnelblick state; without --local also fetches the public IP from api.ipify.org and geolocates it at ipinfo.io (sends the IP off-host)" },
+    { "name": "servers", "tier": "read", "surface": "cli", "note": "api.nordvpn.com recommendations for a country; --limit capped at MAX_LIMIT 50" },
+    { "name": "countries", "tier": "read", "surface": "cli" },
+    { "name": "configs", "tier": "read", "surface": "cli", "note": "Tunnelblick's installed NordVPN configurations via AppleScript" },
+    { "name": "setup", "tier": "read", "surface": "cli", "note": "pre-flight: launches Tunnelblick if needed, resolves credentials (presence only), one API read" },
+    { "name": "connect", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "preview without --yes; with --yes may download an .ovpn, bundle it with the credentials, hand it to Tunnelblick (its own import dialog), then connect; reversible with disconnect --yes" },
+    { "name": "disconnect", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "preview without --yes; with --yes tells Tunnelblick to disconnect all; reversible with connect --yes" },
+    { "name": "account / billing / server-side changes", "tier": "never", "surface": "cli", "note": "no verb exists; the tool holds service credentials only, which cannot act on the account" },
+    { "name": "delete configuration", "tier": "never", "surface": "cli", "note": "no verb; remove bundles in Tunnelblick's VPN Details window" }
+  ],
+  "risk": {
+    "read_only": false,
+    "destructive": false,
+    "idempotent": false,
+    "open_world": false,
+    "worst_case": "this Mac's traffic is routed through (or out of) a NordVPN server the operator did not mean, after a --yes; `status` reveals the public IP to ipify/ipinfo; a credential-bearing .tblk lands under ~/.config/toolbelt/nordvpn/configs and inside Tunnelblick"
+  },
+  "systems": [
+    { "name": "NordVPN", "read": "poetry run nordvpn status --local", "preferred": true }
+  ],
+  "checks": [
+    { "use": "runtime.python", "min": "3.13" },
+    { "use": "runtime.poetry" },
+    { "use": "deps.poetry_env_ready" },
+    { "use": "deps.python_import", "module": "nordvpn.cli" },
+    {
+      "use": "files.exists",
+      "paths": ["/Applications/Tunnelblick.app", "~/Applications/Tunnelblick.app"],
+      "severity": "warn",
+      "label": "Tunnelblick installed",
+      "fix": "brew install --cask tunnelblick"
+    },
+    { "use": "custom", "script": "checks/credentials.mjs", "label": "service credentials resolvable (env, 600-mode file, or Keychain; presence only)" },
+    {
+      "use": "mcp.http_reachable",
+      "url": "https://api.nordvpn.com/v1/servers/countries",
+      "severity": "warn",
+      "label": "api.nordvpn.com reachable"
+    }
+  ],
+  "smoke_test": {
+    "command": "poetry run nordvpn --help >/dev/null && poetry run python -m unittest discover -s tests -q",
+    "expect": "help renders; unit tests pass with no network, no credential, no Tunnelblick: tiers match the manifest, hostname validation, the --limit ceiling, credential-store order and mode refusal, audit line format, connect/disconnect preview without --yes"
+  },
+  "do_not_vendor": [
+    ".env",
+    ".venv/",
+    "configs/",
+    "data/",
+    "__pycache__/",
+    "tmp/"
+  ]
+}

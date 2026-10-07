@@ -1,0 +1,37 @@
+{
+  "name": "slack-cli",
+  "version": "0.1.0",
+  "description": "Read-first Slack CLI and read-only MCP server that run on your own browser session: search, export, download, and tiered human-gated writes",
+  "license": "MIT",
+  "type": "module",
+  "main": "server.js",
+  "bin": {
+    "slack-cli": "./cli.js",
+    "slack-mcp": "./server.js"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "keywords": [
+    "slack",
+    "cli",
+    "mcp",
+    "export",
+    "read-first"
+  ],
+  "scripts": {
+    "start": "node server.js",
+    "cli": "node cli.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.24.3",
+    "commander": "^12.0.0",
+    "puppeteer-core": "^25.6.0",
+    "zod": "^4.4.3"
+  },
+  "overrides": {
+    "ws": "^8.21.1",
+    "tar-fs": "^3.1.3"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "youtube-transcript",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "yt — read-only YouTube caption fetcher for the Toolbelt: InnerTube (no key) and yt-dlp backends",
+  "bin": { "yt": "./yt.mjs" },
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "transcript": "node yt.mjs fetch"
+  },
+  "dependencies": {
+    "@danielxceron/youtube-transcript": "^1.2.6",
+    "dotenv": "^16.4.7"
+  }
+}

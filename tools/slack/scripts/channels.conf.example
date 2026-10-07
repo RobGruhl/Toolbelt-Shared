@@ -1,0 +1,21 @@
+# channels.conf — channels to bulk-pull with scripts/example-bulk-pull.sh
+#
+# Format:   CHANNEL_ID   channel-name   # optional comment
+# Lines starting with # are ignored. Copy this file to channels.conf (which
+# is gitignored: it carries your company's channel ids).
+#
+# Finding channel IDs:
+#   node cli.js list-channels                      # works on most workspaces
+#   node cli.js find-channels sre noc ai           # keyword discovery; the fallback
+#                                                  # when conversations.list is
+#                                                  # admin-restricted (Enterprise Grid)
+#   node cli.js channel-toc                        # broad sweep → CHANNELS.md catalog
+#
+#   Or copy the ID from a Slack permalink:
+#     https://yourco.slack.com/archives/CXXXXXXXXXX/p1700000000000000
+#                                       ^^^^^^^^^^^ this is the channel ID
+#
+# Example rows (replace with your own):
+# CXXXXXXXXXX   engineering-announcements
+# CXXXXXXXXXX   incident-response
+# CXXXXXXXXXX   sre

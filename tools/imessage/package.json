@@ -1,0 +1,12 @@
+{
+  "name": "imessage",
+  "version": "0.1.0",
+  "private": true,
+  "description": "imsg — read the Messages database read-only; send one message at a time behind a /dev/tty gate",
+  "type": "module",
+  "bin": { "imsg": "./imsg.mjs" },
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "node --test test/imsg.test.mjs"
+  }
+}

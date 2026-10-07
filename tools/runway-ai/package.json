@@ -1,0 +1,19 @@
+{
+  "name": "runway-ai",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Preview-first Runway Dev CLI (rwy): credit balance, task lookup, and capped image/video generation",
+  "bin": {
+    "rwy": "./rwy.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@runwayml/sdk": "^4.20.1"
+  }
+}

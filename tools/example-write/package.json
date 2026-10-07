@@ -1,0 +1,12 @@
+{
+  "name": "example-write",
+  "version": "0.1.0",
+  "private": true,
+  "description": "exw — the gated-write example tool: two local text files, every write tier of SENSIBILITIES #2",
+  "type": "module",
+  "bin": { "exw": "./exw.mjs" },
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node --test test/exw.test.mjs"
+  }
+}

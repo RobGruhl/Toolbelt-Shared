@@ -1,0 +1,12 @@
+{
+  "name": "firecrawl",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "fc — Toolbelt Firecrawl CLI: search, scrape, batch and a page-capped crawl; no dependencies",
+  "bin": { "fc": "./fc.mjs" },
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

@@ -1,0 +1,11 @@
+[project]
+name = "spiral-book-impose"
+version = "0.1.0"
+description = "poetry env that supplies pypdf to spiral-book's impose step; no package of its own"
+requires-python = ">=3.11"
+dependencies = [
+    "pypdf (>=5,<7)",
+]
+
+[tool.poetry]
+package-mode = false

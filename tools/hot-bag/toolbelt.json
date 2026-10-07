@@ -1,0 +1,151 @@
+{
+  "name": "hot-bag",
+  "kind": "tool",
+  "description": "Keep an Apple Silicon Mac running an unattended job lid-closed in a bag: `start` flips `pmset disablesleep` behind a typed-yes /dev/tty gate (headless callers stage it for `toolbelt approve`), a sudo-free watchdog logs temperature/battery/tether every 30s, `off` restores sleep ungated, a menu-bar icon shows on/wedged",
+  "hits": "this Mac's power management (`pmset disablesleep`) + thermal/battery/tether telemetry",
+  "surface": "CLI. `status`/`report` are free. `start`/`on` previews the plan and takes a typed \"yes\" on /dev/tty before `sudo pmset -a disablesleep 1`; there is no --yes; with no terminal it stages and prints `toolbelt approve hot-bag <code>`. `stop`/`off` and `doctor` restore sleep and are deliberately ungated. The watchdog's exit trap attempts a passwordless restore and audits the outcome; every pmset mutation is one line in ~/.local/state/hot-bag/audit.log",
+  "platforms": ["darwin"],
+  "origin": {
+    "repo": "https://github.com/RobGruhl/hot-bag.git",
+    "vendored_commit": "4222f8d",
+    "vendored_at": "2026-08-22",
+    "note": "personal repo by the belt owner. Vendored via git archive; hot-bag-graphic.png (3.5 MB README art) was dropped after the copy. The belt copy adds the /dev/tty gate, staging + approve, the audit log and the watchdog restore trap; the origin has none of these"
+  },
+  "runtime": {
+    "package_manager": "none"
+  },
+  "install": [
+    {
+      "action": "ensure_dir",
+      "path": "~/.local/bin",
+      "description": "Create ~/.local/bin for the hot-bag command",
+      "why": "the symlink below needs the directory; nothing else is created",
+      "yes": "mkdir -p ~/.local/bin",
+      "no": "skipped; the symlink step cannot run"
+    },
+    {
+      "action": "ensure_dir",
+      "path": "~/.local/state/hot-bag",
+      "description": "Create the state dir: run CSVs, pid files, the staging queue and the audit log",
+      "why": "the script creates it on first use anyway; creating it now lets the doctor check it",
+      "yes": "mkdir -p ~/.local/state/hot-bag",
+      "no": "skipped; hot-bag creates it on first run"
+    },
+    {
+      "action": "symlink",
+      "from": "~/.local/bin/hot-bag",
+      "to": "{TOOLBELT}/tools/hot-bag/hot-bag",
+      "description": "Put `hot-bag` on PATH, pointing at THIS tree's copy",
+      "why": "the menu-bar indicator and your shell both run whatever ~/.local/bin/hot-bag resolves to; a link to an older checkout runs a copy without the gate",
+      "yes": "~/.local/bin/hot-bag -> {TOOLBELT}/tools/hot-bag/hot-bag; a link to another path is replaced, a real file is renamed to hot-bag.pre-toolbelt",
+      "no": "skipped; `hot-bag` on PATH (if any) keeps running the copy it points at; the doctor keeps warning"
+    },
+    {
+      "run": "./indicator/install.sh",
+      "description": "Build the optional menu-bar indicator (swiftc) and render + load its LaunchAgent from this tree",
+      "why": "indicator/com.hot-bag.indicator.plist.template is rendered with this directory's absolute paths (the {TOOLBELT} expansion) into ~/Library/LaunchAgents/com.hot-bag.indicator.plist, so the 🔥/⚠️ icon polls THIS copy's `hot-bag _indicator-state`; a plist from an older checkout reports a different script's truth",
+      "yes": "compiles indicator/HotBagIndicator with the Xcode CLT swiftc, writes ~/Library/LaunchAgents/com.hot-bag.indicator.plist (an existing one is overwritten), `launchctl bootout` of any prior instance then `launchctl bootstrap gui/<uid>`; logs to ~/.local/state/hot-bag/indicator.log. Needs `xcode-select --install`",
+      "no": "skipped; no menu-bar icon (the CLI does not depend on it); an already-installed plist keeps pointing wherever it points; the doctor warns if that is not this tree. Remove it any time: ./indicator/install.sh uninstall"
+    }
+  ],
+  "entrypoints": {
+    "cli": "./hot-bag",
+    "approve": "./hot-bag approve"
+  },
+  "env": [
+    {
+      "name": "HOTBAG_HOME",
+      "required": false,
+      "secret": false,
+      "description": "State dir: runs/*.csv, pid files, disablesleep.on marker, pending/ staging queue, audit.log. Default ~/.local/state/hot-bag. The smoke test points it at a temp dir"
+    },
+    {
+      "name": "INTERVAL",
+      "required": false,
+      "secret": false,
+      "description": "Seconds between telemetry samples (default 30). Also settable in ~/.config/hot-bag/config with WARN_C/HOT_C/CRIT_C/PING_HOST/LOW_BATT_ACTION/LID_CHIME*"
+    },
+    {
+      "name": "WIFI_SSID",
+      "required": false,
+      "secret": false,
+      "description": "Optional hotspot to rejoin when the link drops; blank disables the rejoin"
+    },
+    {
+      "name": "WIFI_PASSWORD",
+      "required": false,
+      "secret": true,
+      "description": "Password for WIFI_SSID. Set it in ~/.config/hot-bag/config (chmod 600), never in a shell rc; it is passed to networksetup on argv only when a rejoin fires"
+    }
+  ],
+  "auth": {
+    "principal": "user",
+    "flow": "the operator's own admin rights: `sudo pmset` prompts for their password at the terminal (on managed Macs `ensure_admin` first offers a Privileges.app elevation, also confirmed at /dev/tty). No token, no cache, nothing to revoke",
+    "identity": "id -un",
+    "caches": []
+  },
+  "safeguards": [
+    "start/on is gated on /dev/tty: the plan (the exact `sudo pmset -a disablesleep 1`, the restore verb, the worst case) is printed and the operator types \"yes\" at the controlling terminal — `tty_read` in hot-bag opens /dev/tty directly, never stdin, so `echo yes | hot-bag start` does not pass; then sudo's own prompt follows (SENSIBILITIES #2)",
+    "start takes no --yes/--force: either is a usage error (exit 2). A sudo ticket cached from an earlier command would otherwise let a headless caller flip the override with no human in the loop; the typed yes is what makes it a human's act",
+    "start with no controlling terminal STAGES instead of refusing: a 600-mode record under $HOTBAG_HOME/pending/<code> (dir 700, 15-minute expiry, pruned on every touch), exit 2, and the one command printed — `toolbelt approve hot-bag <code>`. Nothing is changed until a human confirms (`stage_start`, `approve` in hot-bag)",
+    "approve opens /dev/tty — never stdin — shows the same plan, takes a typed yes, deletes the record (single use) and runs start in-process through `_HB_APPROVED`, a shell variable reset to 0 at script load so no environment value can pre-approve; with no terminal it refuses (exit 1) and keeps the record, never re-stages or auto-approves",
+    "The restore path is ungated and un-bypassable on purpose: stop/off runs `pmset -a disablesleep 0` first, does not abort cleanup if sudo fails, and exits non-zero so a still-on override is loud; doctor restores only when the disablesleep.on marker proves hot-bag set it (never an override something else set)",
+    "Degraded mode: start arms a trap (INT TERM HUP EXIT) that restores sleep if it aborts after the override was set; the watchdog (_watch) arms a trap that attempts `sudo -n pmset -a disablesleep 0` on any exit and audits `restored` or `not-restored(no passwordless sudo)` — the wedged state is then visible in status, the menu-bar ⚠️, and the doctor's sleep-state check (SENSIBILITIES #8)",
+    "Every pmset mutation goes through one function (`pmset_disablesleep`) that appends `[hot-bag audit] <ts> verb= target= result=` to $HOTBAG_HOME/audit.log and stderr; staging, approve, decline, discard and the watchdog's exit attempt are audited too (SENSIBILITIES #7)",
+    "start --explain prints the plan and touches nothing: no ping, no sudo, no state file (SENSIBILITIES #5)",
+    "No bare `pkill caffeinate`: only processes verified by pid AND command line (`safe_ps_match`) are killed; foreign caffeinate sessions are reported, and swept only under the explicit `stop --kill-stray-caffeinate`",
+    "The watchdog is sudo-free by design: no telemetry reader needs a password, so the unattended loop has no credential dependency; the only sudo calls are the foreground pmset in start/stop/doctor and the opt-in `sudo -n` safeties (low battery, exit trap)",
+    "No secret in the tree: the one credential-shaped setting (WIFI_PASSWORD) lives in ~/.config/hot-bag/config outside the repo; config.example is vendored, the real file never is (SENSIBILITIES #11)"
+  ],
+  "verbs": [
+    { "name": "status", "tier": "read", "surface": "cli", "note": "one-shot live reading: override on/off, temps, throttle, battery, link, data this run; warns on a wedged state. One ping to PING_HOST" },
+    { "name": "report", "tier": "read", "surface": "cli", "note": "summary + verdict over a run CSV (default: current or latest)" },
+    { "name": "chime", "tier": "read", "surface": "cli", "note": "plays the lid-close chime once; if the Mac is muted and LID_CHIME_UNMUTE=on it unmutes for the ~0.5s tone and restores the exact prior mute/volume" },
+    { "name": "start --explain", "tier": "read", "surface": "cli", "note": "the pre-flight: prints the plan, changes nothing" },
+    { "name": "approve --list", "tier": "read", "surface": "cli", "note": "staged starts awaiting a human" },
+    { "name": "_indicator-state", "tier": "read", "surface": "cli", "note": "internal: on|wedged|off for the menu-bar icon; no ping, no sudo" },
+    { "name": "start", "tier": "write-gated", "gate": "tty", "surface": "cli", "note": "alias `on`. `sudo pmset -a disablesleep 1` + watchdog + caffeinate: system state that must be restored. Typed yes on /dev/tty then sudo's prompt; no --yes; headless → staged (exit 2) for `toolbelt approve hot-bag <code>`" },
+    { "name": "approve", "tier": "write-gated", "gate": "tty", "surface": "cli", "note": "what `toolbelt approve hot-bag <code>` runs: shows the plan, typed yes on /dev/tty, runs start once, deletes the record; no terminal → refuse, record kept" },
+    { "name": "stop", "tier": "write", "surface": "cli", "note": "alias `off`. The restore path: `pmset -a disablesleep 0`, kill our watchdog/caffeinate/lid-watcher, print the report. Deliberately ungated — a gate on restoring normal sleep would be a gate on safety; sudo still prompts. `--kill-stray-caffeinate` additionally kills OTHER caffeinate processes (reported, never swept, without the flag)" },
+    { "name": "doctor", "tier": "write", "surface": "cli", "note": "recovery: restores sleep only if hot-bag's disablesleep.on marker exists, sweeps only verified-ours processes, removes stale pid/lock files. Ungated for the same reason as stop; refuses to clear an override hot-bag did not set" },
+    { "name": "_watch", "tier": "read", "surface": "cli", "note": "internal sampling loop spawned by start; writes runs/*.csv under HOTBAG_HOME; exit trap attempts the passwordless restore" },
+    { "name": "_lidwatch", "tier": "read", "surface": "cli", "note": "internal: chimes on lid close while the watchdog lives" },
+    { "name": "any other pmset setting (hibernatemode, autopoweroff, …)", "tier": "never", "note": "the code touches exactly one key, disablesleep; nothing else is reachable" }
+  ],
+  "risk": {
+    "read_only": false,
+    "destructive": false,
+    "idempotent": true,
+    "open_world": false,
+    "worst_case": "disablesleep stays at 1 after a crash with no passwordless sudo: the lid-closed Mac keeps running hot in a zipped bag until the battery is flat or `hot-bag off` / `hot-bag doctor` restores sleep — the wedged state is visible in status, the doctor and the menu-bar ⚠️, and the audit log names the failed restore attempt"
+  },
+  "systems": [
+    { "name": "This Mac (clamshell sleep + thermal/battery/tether telemetry)", "read": "./hot-bag status", "preferred": true }
+  ],
+  "checks": [
+    { "use": "custom", "script": "checks/darwin-tools.mjs", "label": "macOS binaries present; smctemp + swiftc optional" },
+    { "use": "custom", "script": "checks/sleep-state.mjs", "label": "live sleep-override state vs hot-bag's watchdog (wedged = warn)" },
+    {
+      "use": "files.symlink_valid",
+      "path": "~/.local/bin/hot-bag",
+      "target": "{TOOLBELT}/tools/hot-bag/hot-bag",
+      "severity": "warn",
+      "label": "~/.local/bin/hot-bag points at this tree",
+      "fix": "Run: {TOOLBELT}/bin/toolbelt setup hot-bag — replaces a link to an older checkout"
+    },
+    { "use": "custom", "script": "checks/indicator-plist.mjs", "label": "menu-bar LaunchAgent (optional) rendered from this tree" },
+    { "use": "files.dir_writable", "path": "~/.local/state/hot-bag", "severity": "warn", "label": "state dir writable" }
+  ],
+  "smoke_test": {
+    "command": "bash test/smoke.sh",
+    "expect": "in a temp HOTBAG_HOME: script parses; --explain is pure; --yes exits 2; a headless start stages a 600-mode record and exits 2 with the approve command; a headless approve refuses and keeps it; report renders a fixture CSV. No network, no sudo, no pmset"
+  },
+  "do_not_vendor": [
+    "runs/ and *.csv — telemetry of real runs",
+    "*.pid, current-run, disablesleep.on, .lock, pending/, audit.log — live state under ~/.local/state/hot-bag",
+    "indicator/HotBagIndicator — compiled binary, rebuilt by indicator/install.sh",
+    "hot-bag-graphic.png — 3.5 MB README art, dropped after vendoring",
+    ".oraclerc, .claude/ — the origin's local tooling",
+    "~/.config/hot-bag/config — may hold WIFI_PASSWORD; config.example is the vendored shape"
+  ]
+}

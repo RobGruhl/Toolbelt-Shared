@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# In-project venv (rebuilt by `toolbelt setup nordvpn`)
+.venv/
+
+# Credentials: never in the tree. Canonical homes are ~/.config/toolbelt/nordvpn.env (600)
+# or the Keychain; an in-tree .env is a deprecated fallback the tool warns on.
+.env
+
+# Staged OpenVPN bundles embed the service credentials; they live under
+# ~/.config/toolbelt/nordvpn/configs by default and must never land here.
+configs/
+
+# Audit log and any other local state
+data/
+
+# macOS / scratch
+.DS_Store
+tmp/
+output/

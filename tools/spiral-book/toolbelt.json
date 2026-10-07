@@ -1,0 +1,121 @@
+{
+  "name": "spiral-book",
+  "kind": "tool",
+  "description": "Spiral-bound books from Markdown: scaffold a project (color-coded sections, thumb index tabs), pandoc → Typst → PDF, then a 2-up imposed print-ready PDF; every write is contained to the one project directory the operator names",
+  "hits": "the local filesystem (one book project directory)",
+  "surface": "CLI + a Claude Code skill that routes through it. `check`/`plan`/`build`/`impose` are reads (build and impose regenerate derived files inside the named project); `scaffold` is containment-gated (creates files only under the named dir, refuses to touch existing ones, `--force` replaces template files and still never a chapter); `clean` deletes generated files only with `--yes`. Nothing reaches the network or a credential.",
+  "platforms": ["darwin"],
+  "origin": {
+    "repo": "https://github.com/RobGruhl/spiral-book.git",
+    "vendored_commit": "ed2cb79",
+    "vendored_at": "2026-08-22",
+    "note": "the source is one SKILL.md with the pipeline scripts embedded as code blocks; here they are extracted into templates/ and driven by spiral-book.mjs so the doctor, tests and smoke test have something to run. The skill text is the vendored copy in skill/SKILL.md, rewritten to route through the CLI and to treat cover art as optional and external (the original pointed at a local image-generation project that is not part of this tool)."
+  },
+  "runtime": {
+    "node": ">=18",
+    "python": ">=3.11",
+    "package_manager": "poetry"
+  },
+  "install": [
+    {
+      "run": "poetry install --no-root",
+      "description": "Create the in-project .venv with pypdf (the imposition library)",
+      "why": "impose and the last step of build import pypdf; a poetry env keeps it out of the system Python (SENSIBILITIES #10)",
+      "yes": "tools/spiral-book/.venv/ is created from poetry.lock; nothing outside this directory changes",
+      "no": "skipped; build still produces the book PDF and reports imposition as degraded until you run it"
+    },
+    {
+      "action": "symlink",
+      "from": "~/.claude/skills/spiral-book",
+      "to": "{TOOLBELT}/tools/spiral-book/skill",
+      "description": "Install the spiral-book skill where Claude Code discovers it",
+      "why": "the skill is the conversational front door (gather title/sections/chapters, then call this CLI); without the link Claude Code does not see it",
+      "yes": "~/.claude/skills/spiral-book becomes a link to this tool's skill/ dir; a real directory already there is renamed to spiral-book.pre-toolbelt, never deleted",
+      "no": "nothing changes; any existing ~/.claude/skills/spiral-book keeps working on its own, unlinked from the belt"
+    }
+  ],
+  "entrypoints": {
+    "cli": "node spiral-book.mjs"
+  },
+  "env": [
+    {
+      "name": "SPIRAL_BOOK_PYTHON",
+      "required": false,
+      "secret": false,
+      "description": "Interpreter that can `import pypdf`, used by impose and the last build step. Default: this directory's .venv/bin/python. The scaffolded build.sh honors the same variable"
+    }
+  ],
+  "auth": {
+    "principal": "none",
+    "flow": "none — local files under a directory the operator names; no credential exists and nothing reaches the network"
+  },
+  "verbs": [
+    { "name": "check", "tier": "read", "surface": "cli", "note": "pandoc / typst / pypdf / fswatch presence and versions with brew/poetry fix lines; exit 1 when a required one is missing" },
+    { "name": "plan", "tier": "read", "surface": "cli", "note": "chapters from the project's build.sh, which are written vs placeholder, which outputs exist" },
+    { "name": "scaffold", "tier": "write-gated", "gate": "containment", "surface": "cli", "note": "creates guide/{template/theme.typ,template/layout.typ,main.typ,build.sh,impose.py,NN-*.md} and .gitignore under the ONE directory named; every path is checked against that root (contained() in spiral-book.mjs); refuses when any target exists; --force replaces template/build files and never a chapter .md; --explain lists the plan" },
+    { "name": "build", "tier": "read", "surface": "cli", "note": "pandoc each chapter to guide/NN-*.md.typ, typst compile to guide/<slug>.pdf, then impose; writes only those derived files inside the named project and never a chapter .md; without pypdf it names the degraded mode and still exits 0" },
+    { "name": "impose", "tier": "read", "surface": "cli", "note": "guide/<slug>.pdf → guide/<slug>-print-ready.pdf inside the named project; half-letter pages only, other sizes are refused by impose.py" },
+    { "name": "clean", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "deletes the generated .md.typ and PDFs of the named project; previews and writes nothing without --yes (exit 2 headless, 0 at a terminal); chapter and template files are never in the list" },
+    { "name": "watch", "tier": "never", "surface": "cli", "note": "no belt verb; the scaffolded build.sh has a `watch` mode (fswatch + typst watch) the operator runs in their own terminal" },
+    { "name": "cover art generation", "tier": "never", "surface": "cli", "note": "the skill drafts a text prompt into guide/cover-prompt.txt; generating the image is outside this tool (any generator, a designer); main.typ ships with the cover block commented out" }
+  ],
+  "safeguards": [
+    "Containment: resolveProject() fixes the root once and contained() in spiral-book.mjs rejects any write path not under it; chapter stems are validated against STEM_RE (NN-slug, lowercase, no separators) at parse time so no flag can name a path outside the project (SENSIBILITIES #2)",
+    "scaffold never overwrites: with any target present it exits 2 naming the files; --force replaces only the generated template/build files and skips every chapter .md; .md files the operator wrote survive every re-run",
+    "build and impose write only derived files (guide/NN-*.md.typ, guide/<slug>.pdf, guide/<slug>-print-ready.pdf) inside the named project; chapter sources are read, never written",
+    "clean is a flag-gated delete: without --yes it lists exactly the files and writes nothing (exit 2 with no terminal so an agent cannot mistake the preview for success); the list is computed from the project's own build.sh and never includes a chapter or template file (SENSIBILITIES #2)",
+    "--explain on scaffold, build, impose and clean prints the plan and touches nothing (SENSIBILITIES #5)",
+    "Ceilings are code constants in spiral-book.mjs: MAX_CHAPTERS=40 (refused, not lowered), PALETTE of 6 section colors, 8-character tab labels, STEP_TIMEOUT_MS=120000 per pandoc/typst invocation with no retry (SENSIBILITIES #3)",
+    "An audit line goes to stderr on every scaffold, build, impose and clean: timestamp, verb, target dir, file delta (SENSIBILITIES #7)",
+    "Degraded mode is named: a missing pypdf makes build skip imposition and say so with the poetry fix; a missing pandoc or typst is exit 1 with the brew fix before anything is written (SENSIBILITIES #8, #10)",
+    "No credential, no network: auth.principal is none; the only env var is the path of a Python interpreter (SENSIBILITIES #11, #13)"
+  ],
+  "checks": [
+    { "use": "runtime.node", "min": "18" },
+    { "use": "custom", "script": "checks/pandoc.mjs", "label": "pandoc installed (Markdown → Typst)" },
+    { "use": "custom", "script": "checks/typst.mjs", "label": "typst installed (Typst → PDF)" },
+    { "use": "custom", "script": "checks/fswatch.mjs", "label": "fswatch installed (optional: watch mode in a scaffolded build.sh)" },
+    { "use": "runtime.python", "min": "3.11" },
+    { "use": "runtime.poetry" },
+    {
+      "use": "deps.poetry_env_ready",
+      "severity": "warn",
+      "fix": "cd {TOOLBELT}/tools/spiral-book && poetry install --no-root   (or: toolbelt setup spiral-book) — without it build skips imposition"
+    },
+    {
+      "use": "deps.python_import",
+      "module": "pypdf",
+      "severity": "warn",
+      "label": "pypdf importable from the in-project venv (imposition)",
+      "fix": "cd {TOOLBELT}/tools/spiral-book && poetry install --no-root"
+    },
+    {
+      "use": "files.symlink_valid",
+      "path": "~/.claude/skills/spiral-book",
+      "target": "{TOOLBELT}/tools/spiral-book/skill",
+      "severity": "warn",
+      "label": "skill linked into ~/.claude/skills",
+      "fix": "toolbelt setup spiral-book — links ~/.claude/skills/spiral-book to this tool's skill/ dir"
+    }
+  ],
+  "smoke_test": {
+    "command": "node spiral-book.mjs check && node spiral-book.mjs scaffold \"${TMPDIR:-/tmp}/spiral-book-smoke-$$\" --title Smoke --chapter 01-intro --explain && node --test test/spiral-book.test.mjs",
+    "expect": "check reports pandoc and typst present; the scaffold --explain lists the files it would create and writes none; unit tests green (tiers match the manifest, containment, rendering, scaffold idempotence, the clean gate); the end-to-end test compiles a real PDF where pandoc and typst exist"
+  },
+  "do_not_vendor": [
+    ".venv/",
+    "__pycache__/",
+    "data/",
+    "*.pdf"
+  ],
+  "risk": {
+    "read_only": false,
+    "destructive": true,
+    "idempotent": false,
+    "open_world": false,
+    "worst_case": "clean --yes deletes the generated .md.typ and PDF files of the one project directory named (all rebuildable by build); scaffold --force replaces that project's template and build files with fresh ones; chapter .md files are never written by either"
+  },
+  "systems": [
+    { "name": "Spiral-bound book projects (local)", "read": "node spiral-book.mjs check", "preferred": true }
+  ]
+}

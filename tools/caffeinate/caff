@@ -1,0 +1,263 @@
+#!/usr/bin/env bash
+# caff — belt CLI over macOS `caffeinate` (IOKit power assertions).
+#
+#   read         status, assertions                 free: pgrep + pmset, nothing changes
+#   write-gated  start, stop, run  (gate: flag)     preview by default, --yes executes, audited
+#   never        stop-all / pkill caffeinate        no verb exists; only PIDs this tool started
+#                                                   are ever signalled
+#
+# The tier is "flag" because every mutation here is the operator's own process on the
+# operator's own machine and is reversible with one `caff stop`. The naive mistake the gate
+# prevents is an assertion nobody meant to hold (a laptop that never sleeps in a bag); the
+# deliberate act is never refused — --yes is honored from anyone, which is why the agent
+# contract in CLAUDE.md, not the code, says who may pass it.
+#
+# Ceilings (SENSIBILITIES #3) are code constants, not flags: every `start` carries a timeout,
+# the default is an hour, and a request past MAX_TIMEOUT_S is refused naming the constant.
+# `run` has no timeout because the wrapped command bounds it.
+#
+# Exit codes: 0 done or previewed · 1 failure (not a caffeinate PID, caffeinate missing) · 2 usage.
+set -euo pipefail
+
+CLI="caff"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/caffeinate.sh
+source "$SCRIPT_DIR/lib/caffeinate.sh"
+
+# --- ceilings (SENSIBILITIES #3): raise by diff, never by flag -----------------------------
+DEFAULT_TIMEOUT_S=3600    # 1 hour when --timeout is absent
+MAX_TIMEOUT_S=28800       # 8 hours; a longer ask exits 2 naming this constant
+DEFAULT_FLAGS="-di"       # idle + display sleep prevented; -s (system sleep) only on request
+
+# --- local state: PID registry + audit log, under data/ (gitignored) or $CAFF_HOME ---------
+CAFF_HOME="${CAFF_HOME:-$SCRIPT_DIR/data}"
+PIDS_FILE="$CAFF_HOME/pids"
+AUDIT_FILE="$CAFF_HOME/audit.log"
+
+ensure_home() {
+  mkdir -p "$CAFF_HOME"
+  chmod 700 "$CAFF_HOME" 2>/dev/null || true
+  [[ -f "$PIDS_FILE" ]] || : > "$PIDS_FILE"
+  [[ -f "$AUDIT_FILE" ]] || : > "$AUDIT_FILE"
+  chmod 600 "$PIDS_FILE" "$AUDIT_FILE" 2>/dev/null || true
+}
+
+# SENSIBILITIES #7: one grep-able line per mutation, to stderr AND data/audit.log.
+audit() {
+  local stamp
+  stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  local line="[$CLI audit] $stamp $*"
+  echo "$line" >&2
+  ensure_home
+  echo "$line" >> "$AUDIT_FILE"
+}
+
+usage() {
+  cat <<EOF
+$CLI — macOS caffeinate (power assertions), read-first, own-process only
+
+read
+  $CLI status                      who holds assertions now: every caffeinate PID on the
+                                   machine, which of them this tool started, pmset lines
+  $CLI assertions                  pmset -g assertions, verbatim
+
+write-gated (gate: flag — preview by default, --yes executes, audited)
+  $CLI start [-FLAGS] [--timeout S] [--yes]
+                                   background caffeinate; FLAGS are caffeinate's letters
+                                   (d display, i idle, s system/AC-only, m disk, u user-active),
+                                   default $DEFAULT_FLAGS; timeout default ${DEFAULT_TIMEOUT_S}s, ceiling ${MAX_TIMEOUT_S}s
+  $CLI stop <pid>|--mine [--yes]   stop a caffeinate THIS TOOL started (registry + ps check)
+  $CLI run [-FLAGS] -- <cmd...> [--yes]
+                                   hold an assertion only while <cmd> runs (no timeout needed)
+
+never
+  stop-all / pkill caffeinate      no verb; a caffeinate another session holds is not ours
+
+--explain is --yes's opposite: print the plan, change nothing (same as omitting --yes).
+Exit: 0 done or previewed · 1 failure · 2 usage
+EOF
+}
+
+die_usage() { echo "$CLI: $*" >&2; usage >&2; exit 2; }
+
+valid_flags() { [[ "$1" =~ ^-[dimsu]+$ ]]; }
+
+# Remove registry rows whose PID is no longer a caffeinate process (timed out, stopped by hand).
+prune_registry() {
+  ensure_home
+  local tmp; tmp=$(mktemp "$CAFF_HOME/.pids.XXXXXX")
+  while IFS=$'\t' read -r pid rest; do
+    [[ -n "$pid" ]] || continue
+    if caff_is_caffeinate "$pid"; then printf '%s\t%s\n' "$pid" "$rest" >> "$tmp"; fi
+  done < "$PIDS_FILE"
+  mv "$tmp" "$PIDS_FILE"; chmod 600 "$PIDS_FILE"
+}
+
+registry_has() { grep -q "^$1"$'\t' "$PIDS_FILE" 2>/dev/null; }
+
+# ---------------------------------------------------------------------------- read verbs ---
+cmd_status() {
+  prune_registry
+  local all mine
+  all=$(pgrep -x caffeinate | tr '\n' ' ' || true)
+  mine=$(cut -f1 "$PIDS_FILE" | tr '\n' ' ')
+  if [[ -z "${all// /}" ]]; then
+    echo "caffeinate: not running (no process holds an assertion)"
+  else
+    echo "caffeinate running: ${all}"
+    echo "started by $CLI:    ${mine:-none}  (only these are stoppable with '$CLI stop')"
+    pmset -g assertions 2>/dev/null | grep -i caffeinate | sed 's/^/  /' || true
+  fi
+  if [[ -s "$PIDS_FILE" ]]; then
+    echo "registry ($PIDS_FILE): pid  started  flags  timeout_s"
+    sed 's/^/  /' "$PIDS_FILE" | tr '\t' ' '
+  fi
+  return 0
+}
+
+cmd_assertions() { pmset -g assertions; }
+
+# -------------------------------------------------------------------------- write verbs ---
+# start: preview → --yes. Every run carries a timeout so a forgotten assertion expires.
+cmd_start() {
+  local flags="$DEFAULT_FLAGS" timeout="$DEFAULT_TIMEOUT_S" yes=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --yes) yes=true ;;
+      --explain) yes=false ;;
+      --timeout|-t) [[ $# -ge 2 ]] || die_usage "--timeout needs seconds"; timeout="$2"; shift ;;
+      --timeout=*) timeout="${1#*=}" ;;
+      -h|--help) usage; exit 0 ;;
+      -*) valid_flags "$1" || die_usage "unknown flag $1 (caffeinate letters are d i m s u)"; flags="$1" ;;
+      *) die_usage "unexpected argument $1" ;;
+    esac
+    shift
+  done
+  [[ "$timeout" =~ ^[0-9]+$ ]] && (( timeout > 0 )) || die_usage "--timeout must be a positive number of seconds (0 / forever is not offered: every start expires)"
+  if (( timeout > MAX_TIMEOUT_S )); then
+    die_usage "--timeout $timeout exceeds MAX_TIMEOUT_S=$MAX_TIMEOUT_S (8h), a code constant in $CLI; split the work or edit the constant by diff"
+  fi
+  local ends; ends=$(date -v+"${timeout}"S +%H:%M:%S 2>/dev/null || echo "+${timeout}s")
+  echo "would start: caffeinate $flags -t $timeout   (assertion expires at $ends; tier: write-gated/flag — own process, reversible with '$CLI stop')"
+  [[ "$flags" == *s* ]] && echo "  note: -s (system sleep) is honored only on AC power; silently ignored on battery"
+  [[ "$flags" == *u* ]] && echo "  note: -u wakes the display (UserIsActive)"
+  if ! $yes; then
+    echo "Preview only — nothing started. Re-run with --yes to start it:" >&2
+    echo "  $CLI start $flags --timeout $timeout --yes" >&2
+    return 0
+  fi
+  ensure_home
+  nohup caffeinate $flags -t "$timeout" >/dev/null 2>&1 &
+  local pid=$!
+  disown "$pid" 2>/dev/null || true
+  sleep 0.2
+  if ! caff_is_caffeinate "$pid"; then
+    echo "$CLI: caffeinate exited immediately (pid $pid); nothing is held" >&2
+    return 1
+  fi
+  printf '%s\t%s\t%s\t%s\n' "$pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$flags" "$timeout" >> "$PIDS_FILE"
+  audit "verb=start target=pid:$pid flags=$flags timeout_s=$timeout"
+  echo "started caffeinate $flags -t $timeout (pid $pid); undo: $CLI stop $pid --yes"
+  # SENSIBILITIES #2: read back — the assertion in pmset is the evidence, the fork is the claim.
+  local seen=false try
+  for try in 1 2 3 4 5; do
+    if pmset -g assertions 2>/dev/null | grep -q "pid $pid("; then seen=true; break; fi
+    sleep 0.3
+  done
+  if $seen; then
+    echo "  pmset confirms pid $pid holds an assertion"
+  else
+    echo "  pmset does not list pid $pid after 1.5s — check '$CLI status'" >&2
+  fi
+}
+
+# stop: only a PID in this tool's registry that is still a caffeinate process.
+cmd_stop() {
+  local target="" yes=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --yes) yes=true ;;
+      --explain) yes=false ;;
+      --mine|--all-mine) target="--mine" ;;
+      -h|--help) usage; exit 0 ;;
+      [0-9]*) target="$1" ;;
+      *) die_usage "unexpected argument $1" ;;
+    esac
+    shift
+  done
+  [[ -n "$target" ]] || die_usage "stop needs a <pid> from '$CLI status' or --mine"
+  prune_registry
+  local pids=()
+  if [[ "$target" == "--mine" ]]; then
+    while IFS=$'\t' read -r pid rest; do [[ -n "$pid" ]] && pids+=("$pid"); done < "$PIDS_FILE"
+    if (( ${#pids[@]} == 0 )); then echo "nothing to stop: $CLI started no caffeinate that is still running"; return 0; fi
+  else
+    if ! registry_has "$target"; then
+      echo "$CLI: pid $target was not started by $CLI (not in $PIDS_FILE); refusing — this tool signals only its own processes. Stop it where it was started, or 'kill $target' yourself if you own it." >&2
+      return 1
+    fi
+    if ! caff_is_caffeinate "$target"; then
+      echo "$CLI: pid $target is not a running caffeinate process (already exited, or the PID was reused); nothing signalled" >&2
+      return 1
+    fi
+    pids=("$target")
+  fi
+  echo "would stop caffeinate pid(s): ${pids[*]}   (tier: write-gated/flag — own process; the assertion is released, nothing else is touched)"
+  if ! $yes; then
+    echo "Preview only — nothing signalled. Re-run with --yes:" >&2
+    echo "  $CLI stop $target --yes" >&2
+    return 0
+  fi
+  local rc=0
+  for pid in "${pids[@]}"; do
+    if caff_stop "$pid"; then
+      audit "verb=stop target=pid:$pid"
+      echo "stopped caffeinate pid $pid"
+    else
+      rc=1
+    fi
+  done
+  prune_registry
+  return $rc
+}
+
+# run: caffeinate wraps the command; the assertion lives exactly as long as the command.
+cmd_run() {
+  local flags="$DEFAULT_FLAGS" yes=false cmd=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --) shift; cmd=("$@"); break ;;
+      --yes) yes=true ;;
+      --explain) yes=false ;;
+      -h|--help) usage; exit 0 ;;
+      -*) valid_flags "$1" || die_usage "unknown flag $1"; flags="$1" ;;
+      *) die_usage "run takes its command after --" ;;
+    esac
+    shift
+  done
+  (( ${#cmd[@]} > 0 )) || die_usage "run needs a command after --"
+  echo "would run: caffeinate $flags -- ${cmd[*]}   (assertion held only while the command runs; tier: write-gated/flag)"
+  if ! $yes; then
+    echo "Preview only — nothing run. Re-run with --yes:" >&2
+    echo "  $CLI run $flags --yes -- ${cmd[*]}" >&2
+    return 0
+  fi
+  audit "verb=run flags=$flags target=cmd:${cmd[0]} argc=${#cmd[@]}"
+  caffeinate $flags -- "${cmd[@]}"
+}
+
+# ------------------------------------------------------------------------------- dispatch ---
+if [[ "$(uname -s)" != "Darwin" ]]; then echo "$CLI: macOS only (caffeinate/pmset are Darwin binaries)" >&2; exit 1; fi
+command -v caffeinate >/dev/null || { echo "$CLI: /usr/bin/caffeinate not found" >&2; exit 1; }
+
+verb="${1:-}"; shift || true
+case "$verb" in
+  status) cmd_status "$@" ;;
+  assertions) cmd_assertions "$@" ;;
+  start) cmd_start "$@" ;;
+  stop) cmd_stop "$@" ;;
+  run) cmd_run "$@" ;;
+  -h|--help|help|"") usage; [[ -n "$verb" ]] && exit 0 || exit 2 ;;
+  --version) echo "$CLI 1.0.0" ;;
+  *) die_usage "unknown verb '$verb'" ;;
+esac

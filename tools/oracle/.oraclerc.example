@@ -1,0 +1,47 @@
+{
+  "defaultProvider": "openai",
+
+  "providers": {
+    "openai": {
+      // A $VAR reference is read from the environment, then from the macOS Keychain
+      // (security add-generic-password -s OPENAI_API_KEY -a "$USER" -w). Do not paste a key here.
+      "apiKey": "$OPENAI_API_KEY",
+      "model": "gpt-5.5-pro",
+      "maxWaitMinutes": 120,
+      "temperature": 0.2,
+      "enabled": true
+
+      // Background mode (default: true, recommended)
+      // When true, requests are queued server-side and polled for completion.
+      // When false, the HTTP request blocks until the response is ready.
+      // Sync mode can timeout for complex questions that trigger extended
+      // reasoning (10+ minutes). Only disable for debugging.
+      // "useBackgroundMode": true,
+
+      // SDK timeout (only relevant when useBackgroundMode is false)
+      // How long the HTTP client waits for a synchronous response.
+      // "sdkTimeoutMinutes": 30,
+    }
+  },
+
+  "repomix": {
+    "style": "xml",
+    "compress": true,
+    "includeLineNumbers": true,
+    "removeComments": false
+  },
+
+  "limits": {
+    "maxCostPerRequest": 10.00,
+    "warnCostThreshold": 5.00
+  },
+
+  "ui": {
+    "showProgressIndicator": true,
+    "saveHistory": true
+
+    // Where consultations are written. Default: the tool's own data/history/ (mode 600,
+    // gitignored). Set a path (relative to the project) to keep them next to the code.
+    // "historyPath": ".claude/oracle-history"
+  }
+}

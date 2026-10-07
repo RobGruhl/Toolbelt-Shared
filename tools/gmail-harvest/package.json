@@ -1,0 +1,12 @@
+{
+  "name": "gmail-harvest",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "gmh — read-only, byte-exact Gmail export (gmail.readonly only), no dependencies",
+  "bin": { "gmh": "./gmh.mjs" },
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

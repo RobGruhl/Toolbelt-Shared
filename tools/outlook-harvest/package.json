@@ -1,0 +1,10 @@
+{
+  "name": "outlook-harvest",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "omh — read-only, byte-exact Outlook.com/Hotmail export via Microsoft Graph (Mail.Read only); gmh-compatible export directory; no dependencies",
+  "bin": { "omh": "./omh.mjs" },
+  "engines": { "node": ">=20" },
+  "scripts": { "test": "node --test test/*.test.mjs" }
+}

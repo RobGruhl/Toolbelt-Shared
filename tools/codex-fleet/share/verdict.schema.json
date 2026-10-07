@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "required": ["status", "summary", "evidence"],
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["pass", "fail", "blocked"],
+      "description": "pass = the acceptance check objectively succeeded; fail = it objectively did not; blocked = could not run the check (missing deps, sandbox denial, unclear task)"
+    },
+    "summary": {
+      "type": "string",
+      "description": "One or two sentences: what was checked and what happened"
+    },
+    "evidence": {
+      "type": "string",
+      "description": "The decisive command(s) run and the decisive lines of their output, verbatim. Never assert pass/fail without command output to back it."
+    }
+  }
+}

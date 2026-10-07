@@ -1,0 +1,5 @@
+data/
+output/
+tmp/
+.DS_Store
+*.log

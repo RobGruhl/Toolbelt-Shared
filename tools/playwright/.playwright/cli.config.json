@@ -1,0 +1,9 @@
+{
+  "browser": {
+    "browserName": "chromium",
+    "isolated": true,
+    "launchOptions": { "channel": "chrome", "headless": true }
+  },
+  "outputDir": "output",
+  "outputMode": "stdout"
+}

@@ -1,0 +1,681 @@
+openapi: 3.0.3
+info:
+  title: Slack Web API (browser-session access, as used by slack-cli)
+  description: |
+    Documentation of the Slack API endpoints slack-cli uses, addressed through your workspace host.
+
+    ## API Types
+    - **Official APIs**: Documented at docs.slack.dev, work with enterprise domain routing
+    - **Internal APIs**: Discovered via network capture, may change without notice
+    - **Edge APIs**: Caching layer for user/channel lookups
+
+    ## Endpoints in use
+    | Endpoint | Status | Notes |
+    |----------|--------|-------|
+    | `search.messages` | **Works** | Official, flat response |
+    | `conversations.history` | **Works** | Official |
+    | `conversations.replies` | **Works** | Official |
+    | `users.info` | **Works** | Official, needs valid ID |
+    | Edge `users/search` | **Works** | For username resolution |
+
+    **Authentication**: Cookie (d) + xoxc token from the browser sign-in
+  version: 1.0.0
+  contact:
+    name: slack-cli
+
+servers:
+  - url: https://yourco.slack.com/api
+    description: Main API (requires enterprise routing)
+  - url: https://edgeapi.slack.com/cache/{enterprise_id}
+    description: Edge API (caching layer for lookups)
+    variables:
+      enterprise_id:
+        default: EXXXXXXXXXX
+        description: Enterprise Grid org id (E…), or the team id (T…) on a single workspace
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: d
+      description: Session cookie from the browser sign-in
+    tokenAuth:
+      type: apiKey
+      in: body
+      name: token
+      description: xoxc-* token extracted from boot_data.api_token
+
+  schemas:
+    Message:
+      type: object
+      properties:
+        ts:
+          type: string
+          description: Message timestamp (e.g., "1766446132.507669")
+        text:
+          type: string
+        user:
+          type: string
+          description: User ID (e.g., "U12345678")
+        username:
+          type: string
+        permalink:
+          type: string
+        reactions:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              count:
+                type: integer
+        reply_count:
+          type: integer
+        thread_ts:
+          type: string
+
+    User:
+      type: object
+      description: User object from Edge API users/search
+      properties:
+        id:
+          type: string
+          description: User ID (e.g., "UJQSE2NS3")
+        name:
+          type: string
+          description: Employee ID (e.g., "10000000")
+        real_name:
+          type: string
+          description: Full name at top level (e.g., "Jane Doe")
+        deleted:
+          type: boolean
+          description: Whether the user account has been deactivated
+        is_bot:
+          type: boolean
+          description: Whether the user is a bot
+        is_admin:
+          type: boolean
+          description: Whether the user is an admin
+        tz:
+          type: string
+          description: User's timezone identifier (e.g., "America/Los_Angeles")
+        tz_label:
+          type: string
+          description: User's timezone label (e.g., "Pacific Standard Time")
+        profile:
+          type: object
+          description: User profile with display name and contact info
+          properties:
+            display_name:
+              type: string
+              description: Display name shown in Slack (e.g., "jane")
+            display_name_normalized:
+              type: string
+            first_name:
+              type: string
+            last_name:
+              type: string
+            real_name:
+              type: string
+            email:
+              type: string
+            title:
+              type: string
+            status_text:
+              type: string
+              description: Custom status message (e.g., "On vacation", "Working from home")
+            status_emoji:
+              type: string
+              description: Status emoji (e.g., ":palm_tree:", ":house:")
+            status_expiration:
+              type: integer
+              description: Unix timestamp when status expires (0 means no expiration)
+
+    Channel:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Channel ID (e.g., "C12345678")
+        name:
+          type: string
+          description: Channel name without #
+        is_private:
+          type: boolean
+
+    SearchMessagesResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              messages:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Message'
+              channel:
+                $ref: '#/components/schemas/Channel'
+        pagination:
+          type: object
+          properties:
+            total_count:
+              type: integer
+
+paths:
+  # ============================================================================
+  # SEARCH APIs - Official (docs.slack.dev)
+  # ============================================================================
+
+  /search.messages:
+    post:
+      summary: Search messages (Official API)
+      description: |
+        **Official Slack Web API** - documented at docs.slack.dev
+
+        Primary message search endpoint. Works with enterprise domain routing.
+        Returns flat structure with matches directly accessible.
+
+        Supports search operators: `in:#channel`, `from:<user_id>`
+      operationId: searchMessages
+      tags: [Search - Official]
+      security:
+        - cookieAuth: []
+          tokenAuth: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token, query]
+              properties:
+                token:
+                  type: string
+                  description: xoxc-* API token
+                query:
+                  type: string
+                  description: |
+                    Search query with operators:
+                    - `in:#channel_name` - Filter by channel
+                    - `from:<user_id>` - Filter by user (requires ID, not username)
+                    - `before:YYYY-MM-DD` - Date filter
+                    - `after:YYYY-MM-DD` - Date filter
+                  example: "in:#sig-aiops kubernetes"
+                count:
+                  type: integer
+                  description: Number of results (default 20, max 100)
+                  default: 20
+                sort:
+                  type: string
+                  enum: [timestamp, score]
+                  description: Sort field
+                  default: timestamp
+                sort_dir:
+                  type: string
+                  enum: [asc, desc]
+                  description: Sort direction
+                  default: desc
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  messages:
+                    type: object
+                    properties:
+                      total:
+                        type: integer
+                      matches:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Message'
+
+  /users.info:
+    post:
+      summary: Get user info by ID (Official API)
+      description: |
+        **Official Slack Web API** - documented at docs.slack.dev
+
+        Get detailed user information by user ID. Returns profile data including
+        name, real_name, display_name, and more.
+      operationId: usersInfo
+      tags: [Users - Official]
+      security:
+        - cookieAuth: []
+          tokenAuth: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token, user]
+              properties:
+                token:
+                  type: string
+                  description: xoxc-* API token
+                user:
+                  type: string
+                  description: User ID (e.g., "U12345678")
+      responses:
+        '200':
+          description: User information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  user:
+                    $ref: '#/components/schemas/User'
+
+  # ============================================================================
+  # SEARCH APIs - Internal (discovered via network capture)
+  # ============================================================================
+
+  /search.modules.messages:
+    post:
+      summary: Search messages (Internal - prefer /search.messages)
+      description: |
+        **Internal API** - discovered via network capture. Prefer official `/search.messages` endpoint.
+
+        Returns nested structure: `items[].messages[]`
+
+        **Note**: `from:@username` requires user ID, not username. Use Edge API `users/search` first.
+      operationId: searchModulesMessages
+      tags: [Search]
+      security:
+        - cookieAuth: []
+          tokenAuth: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token, query]
+              properties:
+                token:
+                  type: string
+                  description: xoxc-* API token
+                query:
+                  type: string
+                  description: |
+                    Search query with operators:
+                    - `in:#channel_name` - Filter by channel
+                    - `from:<user_id>` - Filter by user (requires ID, not username)
+                    - `before:YYYY-MM-DD` - Date filter
+                    - `after:YYYY-MM-DD` - Date filter
+                  example: "in:#sig-aiops kubernetes"
+                count:
+                  type: integer
+                  description: Number of results (default 20, max 100)
+                  default: 20
+                sort:
+                  type: string
+                  enum: [timestamp, score]
+                  description: Sort field
+                  default: timestamp
+                sort_dir:
+                  type: string
+                  enum: [asc, desc]
+                  description: Sort direction
+                  default: desc
+                module:
+                  type: string
+                  default: messages
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchMessagesResponse'
+
+  /search.modules.channels:
+    post:
+      summary: Search channels
+      description: Search for channels by name or description
+      operationId: searchModulesChannels
+      tags: [Search]
+      security:
+        - cookieAuth: []
+          tokenAuth: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token, query]
+              properties:
+                token:
+                  type: string
+                query:
+                  type: string
+                count:
+                  type: integer
+                  default: 20
+      responses:
+        '200':
+          description: Channel search results
+
+  /search.modules.people:
+    post:
+      summary: Search people
+      description: Search for users by name
+      operationId: searchModulesPeople
+      tags: [Search]
+      security:
+        - cookieAuth: []
+          tokenAuth: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token, query]
+              properties:
+                token:
+                  type: string
+                query:
+                  type: string
+                count:
+                  type: integer
+                  default: 20
+      responses:
+        '200':
+          description: People search results
+
+  /search.inline:
+    post:
+      summary: Inline search suggestions
+      description: Real-time search suggestions as user types
+      operationId: searchInline
+      tags: [Search]
+      security:
+        - cookieAuth: []
+          tokenAuth: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token, query]
+              properties:
+                token:
+                  type: string
+                query:
+                  type: string
+      responses:
+        '200':
+          description: Inline suggestions
+
+  # ============================================================================
+  # CONVERSATION APIs (Main API)
+  # ============================================================================
+
+  /conversations.history:
+    post:
+      summary: Get channel message history
+      description: Fetch messages from a channel. Can retrieve specific messages by timestamp.
+      operationId: conversationsHistory
+      tags: [Conversations]
+      security:
+        - cookieAuth: []
+          tokenAuth: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token, channel]
+              properties:
+                token:
+                  type: string
+                channel:
+                  type: string
+                  description: Channel ID (e.g., "C12345678")
+                oldest:
+                  type: string
+                  description: Start of time range (timestamp)
+                latest:
+                  type: string
+                  description: End of time range (timestamp)
+                inclusive:
+                  type: boolean
+                  description: Include messages with oldest/latest timestamps
+                  default: false
+                limit:
+                  type: integer
+                  description: Number of messages to return
+                  default: 100
+      responses:
+        '200':
+          description: Channel history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  messages:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Message'
+
+  /conversations.replies:
+    post:
+      summary: Get thread replies
+      description: Fetch all replies in a thread
+      operationId: conversationsReplies
+      tags: [Conversations]
+      security:
+        - cookieAuth: []
+          tokenAuth: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token, channel, ts]
+              properties:
+                token:
+                  type: string
+                channel:
+                  type: string
+                  description: Channel ID
+                ts:
+                  type: string
+                  description: Thread parent timestamp
+                limit:
+                  type: integer
+                  default: 100
+      responses:
+        '200':
+          description: Thread replies
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  messages:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Message'
+
+  # ============================================================================
+  # EDGE API - User/Channel Lookup
+  # ============================================================================
+  # Note: These endpoints use edgeapi.slack.com, not the workspace host
+
+  /users/search:
+    post:
+      summary: Search users by name (Edge API)
+      description: |
+        **Base URL**: `https://edgeapi.slack.com/cache/{enterprise_id}/users/search`
+
+        Search for users by name or username. Returns user IDs needed for `from:` filter.
+        This is the key endpoint for implementing `from:@username` support.
+      operationId: edgeUsersSearch
+      tags: [Edge API]
+      servers:
+        - url: https://edgeapi.slack.com/cache/{enterprise_id}
+          variables:
+            enterprise_id:
+              default: EXXXXXXXXXX
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+                query:
+                  type: string
+                  description: Username or real name to search
+                count:
+                  type: integer
+                  default: 10
+      responses:
+        '200':
+          description: User search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/User'
+
+  /channels/search:
+    post:
+      summary: Search channels by name (Edge API)
+      description: |
+        **Base URL**: `https://edgeapi.slack.com/cache/{enterprise_id}/channels/search`
+
+        Search for channels by name. Returns channel IDs.
+      operationId: edgeChannelsSearch
+      tags: [Edge API]
+      servers:
+        - url: https://edgeapi.slack.com/cache/{enterprise_id}
+          variables:
+            enterprise_id:
+              default: EXXXXXXXXXX
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+                query:
+                  type: string
+                  description: Channel name to search
+                count:
+                  type: integer
+                  default: 10
+      responses:
+        '200':
+          description: Channel search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Channel'
+
+  /users/info:
+    post:
+      summary: Get user info by ID (Edge API)
+      description: |
+        **Base URL**: `https://edgeapi.slack.com/cache/{enterprise_id}/users/info`
+
+        Get detailed user information by user ID.
+      operationId: edgeUsersInfo
+      tags: [Edge API]
+      servers:
+        - url: https://edgeapi.slack.com/cache/{enterprise_id}
+          variables:
+            enterprise_id:
+              default: EXXXXXXXXXX
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+                users:
+                  type: array
+                  items:
+                    type: string
+                  description: Array of user IDs
+      responses:
+        '200':
+          description: User info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/User'
+
+tags:
+  - name: Search - Official
+    description: Official Slack Web API search endpoints (docs.slack.dev)
+  - name: Users - Official
+    description: Official user lookup endpoints
+  - name: Search
+    description: Internal message, channel, and people search endpoints (discovered via network capture)
+  - name: Conversations
+    description: Channel history and thread operations (official endpoints)
+  - name: Edge API
+    description: |
+      Caching layer endpoints at `edgeapi.slack.com/cache/{enterprise_id}/`.
+      Used for fast lookups of users and channels by name.

@@ -1,0 +1,13 @@
+# High quality transcription with timestamps
+name: high_quality
+description: Full transcription with timestamps for subtitle generation
+
+backend: whisper_cpp
+base_url: http://127.0.0.1:2022
+timeout: 600
+
+language: null
+prompt: null
+timestamps: true
+
+output_format: json

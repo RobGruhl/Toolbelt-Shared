@@ -1,0 +1,135 @@
+{
+  "name": "video-rename",
+  "kind": "tool",
+  "description": "Rename videos to YYYY-MM-DD__descriptive_slug.ext from a Claude vision read of sampled frames (optional Whisper transcript via tools/transcription): `analyze` is a paid read that only proposes, `rename` needs --yes, every rename is logged and `undo` reverses it",
+  "hits": "local video files + the Anthropic API (paid, the operator's own key)",
+  "surface": "CLI. `analyze` samples frames, asks Claude, prints the plan and saves it (paid; audit line per call; --explain estimates cost with no call). `rename` previews by default and renames only with --yes — or replays a saved plan with `--plan FILE --yes` at no API cost; never overwrites; audit line per rename. Every rename lands in renames.jsonl and `undo --yes` reverses it. In-code ceilings on frames (16) and files per run (25 default, 200 max).",
+  "platforms": ["darwin"],
+  "origin": {
+    "repo": "https://github.com/RobGruhl/video-analysis.git",
+    "vendored_commit": "f31c54c",
+    "vendored_at": "2026-08-22",
+    "note": "vendored as tools/video-rename; the Python package keeps its upstream name video_analysis. The belt added the verb split (analyze/rename/undo/log), the --yes gate, the plan files, the audit and rename logs, the key-file resolution, the ceilings, and the belt-first lookup of `transcribe`"
+  },
+  "runtime": {
+    "python": ">=3.13",
+    "package_manager": "poetry"
+  },
+  "install": [
+    {
+      "run": "poetry env use /opt/homebrew/opt/python@3.13/bin/python3.13 && poetry install",
+      "description": "Create the in-project .venv on Homebrew Python 3.13 and install the locked dependencies (PyAV, anthropic, pillow, typer, rich)",
+      "why": "poetry.toml pins the venv in-project so the path is stable and nothing is installed globally; PyAV needs Homebrew ffmpeg 8.x at runtime",
+      "yes": ".venv/ is created inside tools/video-rename from poetry.lock; no network call to Anthropic is made",
+      "no": "skipped; every `poetry run video-rename` fails on import until you run it"
+    },
+    {
+      "action": "ensure_dir",
+      "path": "~/.config/toolbelt",
+      "description": "Create the directory the key file lives in (~/.config/toolbelt/video-rename.env, mode 600)",
+      "why": "the key belongs outside the tree; the tool refuses a group/world-readable key file",
+      "yes": "mkdir -p ~/.config/toolbelt; you still write the file yourself",
+      "no": "export ANTHROPIC_API_KEY in the shell instead"
+    }
+  ],
+  "entrypoints": {
+    "cli": "poetry run video-rename"
+  },
+  "env": [
+    {
+      "name": "ANTHROPIC_API_KEY",
+      "required": true,
+      "secret": true,
+      "description": "The operator's own Anthropic API key. Alternative: ANTHROPIC_API_KEY=... in ~/.config/toolbelt/video-rename.env (mode 600). Only `analyze` and a `rename` without --plan need it; --explain, --plan, undo and log do not"
+    },
+    {
+      "name": "VIDEO_RENAME_HOME",
+      "required": false,
+      "secret": false,
+      "description": "Where audit.log, renames.jsonl and plans/ live. Default ~/.local/share/video-rename (dir 700, files 600). Tests point it at a temp dir"
+    },
+    {
+      "name": "TOOLBELT",
+      "required": false,
+      "secret": false,
+      "description": "Belt root used to find tools/transcription/.venv/bin/transcribe; defaults to the root this tool sits in"
+    }
+  ],
+  "auth": {
+    "principal": "user",
+    "flow": "the operator's own Anthropic API key from $ANTHROPIC_API_KEY, else a 600-mode dotenv file; billed to the operator's account",
+    "login": "Create a key at console.anthropic.com, then: printf 'ANTHROPIC_API_KEY=sk-ant-...\\n' > ~/.config/toolbelt/video-rename.env && chmod 600 ~/.config/toolbelt/video-rename.env",
+    "identity": "poetry run video-rename analyze tests/fixtures/tiny.mp4 --explain   (prints which key source is in use, never the key)",
+    "caches": [
+      {
+        "path": "~/.config/toolbelt/video-rename.env",
+        "class": "static",
+        "store": "file",
+        "note": "optional 600-mode dotenv file; a group/world-readable file is refused. An in-tree .env is read as a deprecated fallback and named on stderr",
+        "revoke": "Delete the key at console.anthropic.com"
+      }
+    ]
+  },
+  "safeguards": [
+    "Read-first: `analyze` never renames — it proposes, prints, and saves a plan; the rename code path is a separate verb (cli.py rename) (SENSIBILITIES #1)",
+    "`rename` without --yes writes nothing: it prints the plan and the exact `rename --plan <file> --yes` re-run; --yes is the loud, always-honored flag for a private, reversible write (cli.py rename; SENSIBILITIES #2 flag tier)",
+    "Every rename stays in place and is reversible: rename.check_same_directory refuses a destination outside the source's resolved directory (so a hand-edited plan or log cannot move a file), rename.apply_rename never overwrites (FileExistsError), the new name is collision-safe (build_new_name probes _2, _3 …), and each rename is appended to renames.jsonl so `undo --yes` puts it back (paths.record_rename, cli.py undo)",
+    "Read back after every write: the rename returns, then the filesystem is re-checked and RE-READ MISMATCH is reported if the destination is missing or the source remains (cli.py _apply_entries)",
+    "Audit line to stderr and to ~/.local/share/video-rename/audit.log on every paid call (model, frames, tokens the API reported) and every rename/undo (old → new) — never the key, never a frame (paths.audit; SENSIBILITIES #7)",
+    "Ceilings are code constants in config.py: MAX_FRAMES=16 and MAX_FILES=200 are refused above, not lowered; DEFAULT_MAX_FILES=25 guards a recursive sweep, --max-files raises it up to the ceiling (cli.py _settings/_discover; SENSIBILITIES #3)",
+    "--explain pre-flight on analyze and rename lists the files, model, frame count and an approximate input cost and makes no API call — it needs no key (cli.py _explain; SENSIBILITIES #5)",
+    "Degraded mode is named: a missing `transcribe` binary prints one yellow line and the run continues visual-only; one failed transcription affects only that file (cli.py _analyze; SENSIBILITIES #8)",
+    "Key from $ANTHROPIC_API_KEY or ~/.config/toolbelt/video-rename.env only; a group/world-readable key file is refused; the in-tree .env fallback is announced as deprecated; the key is passed to the SDK in-process and never printed, logged, or placed on argv (auth.py; SENSIBILITIES #6, #11)",
+    "Files that already match YYYY-MM-DD__ are skipped unless --include-renamed, so a re-run over a sorted folder spends nothing (discover.looks_renamed)",
+    "The VERBS table in cli.py is the tier contract; tests/test_safety.py asserts the manifest's verbs[] matches it"
+  ],
+  "verbs": [
+    { "name": "analyze", "tier": "read", "note": "paid: one Claude vision call per file (sonnet default, ~$0.003–0.01/file at medium res); proposes names only; audit line per call; --explain is free" },
+    { "name": "rename", "tier": "write-gated", "gate": "flag", "note": "preview by default (a paid analyze + a saved plan); --yes renames; `--plan FILE --yes` replays a saved plan with no API call; renames only inside the file's own directory, never overwrites, each one logged for undo" },
+    { "name": "undo", "tier": "write-gated", "gate": "flag", "note": "preview by default; --yes renames the last N files back from renames.jsonl; refuses when the target now exists" },
+    { "name": "log", "tier": "read", "note": "the rename log; --all includes undone renames" },
+    { "name": "delete / move across directories / overwrite", "tier": "never", "note": "no code path: rename.check_same_directory (enforced in apply_rename, _apply_entries and undo) refuses any destination outside the source's resolved directory, and an existing target is refused" }
+  ],
+  "risk": {
+    "read_only": false,
+    "destructive": false,
+    "idempotent": false,
+    "open_world": false,
+    "worst_case": "a batch of the operator's own video files renamed to names a model chose — every one logged and reversible with `undo`, and up to 200 paid vision calls on the operator's own Anthropic account (≈ a few dollars at the default model and resolution)"
+  },
+  "systems": [
+    { "name": "Local video files (naming)", "read": "poetry run video-rename analyze <file-or-dir> --explain", "preferred": true }
+  ],
+  "checks": [
+    { "use": "runtime.python", "min": "3.13" },
+    { "use": "runtime.poetry" },
+    { "use": "deps.poetry_env_ready" },
+    { "use": "deps.python_import", "module": "video_analysis.cli" },
+    { "use": "system.ffmpeg", "fix": "brew install ffmpeg — PyAV links against Homebrew ffmpeg 8.x at runtime" },
+    {
+      "use": "files.env_set",
+      "name": "ANTHROPIC_API_KEY",
+      "key_file": "~/.config/toolbelt/video-rename.env",
+      "severity": "warn",
+      "label": "Anthropic API key present (env, or ~/.config/toolbelt/video-rename.env mode 600)",
+      "fix": "printf 'ANTHROPIC_API_KEY=sk-ant-...\\n' > ~/.config/toolbelt/video-rename.env && chmod 600 ~/.config/toolbelt/video-rename.env"
+    },
+    {
+      "use": "custom",
+      "script": "checks/transcribe-binary.mjs",
+      "severity": "warn",
+      "label": "transcribe CLI reachable (tools/transcription/.venv, then PATH) — optional, --transcribe degrades without it"
+    }
+  ],
+  "smoke_test": {
+    "command": "poetry run video-rename --help >/dev/null && VIDEO_RENAME_HOME=$(mktemp -d) poetry run video-rename analyze tests/fixtures/tiny.mp4 --explain && VIDEO_RENAME_HOME=$(mktemp -d) poetry run pytest -q",
+    "expect": "help renders; the --explain pre-flight lists the fixture, model and cost estimate with no API call and no key; pytest green (frame extraction against the fixture, naming, key resolution, audit/rename log, undo, ceilings, manifest↔VERBS parity) — no network, nothing outside a temp dir touched"
+  },
+  "do_not_vendor": [
+    ".venv/",
+    ".env",
+    "__pycache__/",
+    ".pytest_cache/",
+    "data/"
+  ]
+}

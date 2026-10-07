@@ -1,0 +1,31 @@
+{
+  "name": "ask-the-oracle",
+  "version": "1.5.0",
+  "description": "Toolbelt tool: deep code analysis by sending a Repomix pack to OpenAI GPT-5.5 Pro, with a gated paid send",
+  "type": "module",
+  "main": "skills/ask-the-oracle/scripts/oracle.js",
+  "scripts": {
+    "test": "ORACLE_DATA_DIR=\"${ORACLE_DATA_DIR:-$(mktemp -d)}\" node skills/ask-the-oracle/scripts/tests/run-tests.js"
+  },
+  "keywords": [
+    "claude-code",
+    "skill",
+    "gpt-5",
+    "openai",
+    "code-analysis",
+    "ai",
+    "oracle"
+  ],
+  "author": "Rob Gruhl",
+  "license": "MIT",
+  "dependencies": {
+    "chalk": "^5.6.2",
+    "openai": "^6.39.0",
+    "ora": "^9.4.0",
+    "repomix": "^1.14.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "bun": ">=1.0.0"
+  }
+}

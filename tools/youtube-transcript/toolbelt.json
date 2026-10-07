@@ -1,0 +1,109 @@
+{
+  "name": "youtube-transcript",
+  "aliases": ["yt", "yt-transcript"],
+  "kind": "tool",
+  "description": "Read-only YouTube caption fetcher, no API key: InnerTube backend (vendored library) plus a yt-dlp backend with the clean_vtt.py markdown cleaner; fetch, search, stats, batch",
+  "hits": "YouTube (public captions)",
+  "surface": "read-only CLI; two read backends (InnerTube scrape, `yt-dlp --skip-download`); writes only a local file the operator names with `--out`, never over an existing one without `--force`; no YouTube write code exists",
+  "readme_label": "`tools/youtube-transcript` (`yt`)",
+  "platforms": ["darwin"],
+  "origin": {
+    "repo": "/Users/robgruhl/Projects/hello-youtube-transcript",
+    "vendored_commit": "a57ec3a",
+    "vendored_at": "2026-08-22",
+    "note": "local-only hello-* workshop, no public remote; the hello-* lib/ and examples/ are kept as-is. scripts/clean_vtt.py is a copy of ~/.claude/skills/yt-transcript/scripts/clean_vtt.py (the legacy skill this tool supersedes)"
+  },
+  "runtime": {
+    "node": ">=18",
+    "python": ">=3.9",
+    "package_manager": "npm"
+  },
+  "install": [
+    {
+      "run": "npm install",
+      "description": "Install @danielxceron/youtube-transcript (the InnerTube backend) and dotenv locally from package-lock.json",
+      "why": "yt.mjs imports the InnerTube library lazily; the examples import dotenv. Nothing is installed globally",
+      "yes": "node_modules/ is created inside tools/youtube-transcript; no call to YouTube is made",
+      "no": "skipped; fetch/search/stats/batch fail on import until you run it. The ytdlp verb and the unit tests work without it"
+    }
+  ],
+  "entrypoints": {
+    "cli": "node yt.mjs"
+  },
+  "env": [],
+  "auth": {
+    "principal": "none",
+    "flow": "No credential. Both backends read public caption tracks over the operator's own egress; YouTube rate-limits by source IP (HTTP 429), which is the only 'auth' that can fail",
+    "caches": []
+  },
+  "safeguards": [
+    "Read-only by construction: yt.mjs holds no YouTube write code; the InnerTube backend issues GETs and the yt-dlp backend runs `yt-dlp --skip-download` (SENSIBILITIES #1)",
+    "Ceilings are code constants in yt.mjs, refused rather than lowered: MAX_BATCH=20 videos per call, MAX_CONTEXT=5, TIMEOUT_MS=30000 per call; `batch` sleeps BATCH_DELAY_MS=1500 between videos (SENSIBILITIES #3, #9)",
+    "--explain pre-flight (renderExplain) prints the video, backend, language, format and output path and makes no call (SENSIBILITIES #5)",
+    "Audit line to stderr before every network call (audit()): timestamp, verb, backend, video id (SENSIBILITIES #7)",
+    "Degraded mode is named: `fetch --format md` falls back to the yt-dlp backend when InnerTube reports no captions and says so on stderr; every other failure names the `ytdlp` verb to try (SENSIBILITIES #8)",
+    "The only file write is --out (emit()): an existing file is refused without --force; the yt-dlp backend works in a mkdtemp dir under the OS temp dir that is removed afterwards, never in the tree",
+    "Argument hygiene: extractVideoId() reduces every input to an 11-character id and the yt-dlp URL is rebuilt from it, so nothing the caller typed reaches yt-dlp's argv; --lang is validated against a language-code pattern; parseCli is strict and an unknown flag exits 2",
+    "No credential, no cache, no env: nothing to leak (SENSIBILITIES #11)"
+  ],
+  "verbs": [
+    { "name": "fetch", "tier": "read", "note": "captions via InnerTube as text | timestamped | segments | json | srt | md; --out writes one local file; md falls back to yt-dlp when InnerTube has nothing" },
+    { "name": "search", "tier": "read", "note": "case-insensitive substring over segments with ±--context (max 5)" },
+    { "name": "stats", "tier": "read", "note": "segments, words, duration, language" },
+    { "name": "batch", "tier": "read", "note": "stats per video, max 20, 1500 ms apart; exit 1 if any video failed" },
+    { "name": "ytdlp", "tier": "read", "note": "yt-dlp --skip-download --write-subs --write-auto-subs, then scripts/clean_vtt.py → markdown with a title/channel/date header; requires yt-dlp on PATH" },
+    { "name": "any YouTube write (comment, like, upload, playlist)", "tier": "never", "note": "no write code exists and no credential is held; the Data API is not used at all" }
+  ],
+  "risk": {
+    "read_only": true,
+    "destructive": false,
+    "idempotent": true,
+    "open_world": false,
+    "worst_case": "YouTube rate-limits this IP (429) after a burst of fetches, capped at 20 videos per batch with a 1.5 s delay; or a transcript lands in a local file the operator named with --out"
+  },
+  "systems": [
+    {
+      "name": "YouTube (captions / transcripts)",
+      "read": "node yt.mjs ytdlp jNQXAC9IVRw",
+      "preferred": true
+    }
+  ],
+  "checks": [
+    { "use": "runtime.node", "min": "18" },
+    {
+      "use": "deps.npm_installed",
+      "severity": "warn",
+      "fix": "cd {TOOLBELT}/tools/youtube-transcript && npm install   (or: toolbelt setup youtube-transcript) — fetch/search/stats/batch need it; ytdlp and the tests do not"
+    },
+    {
+      "use": "runtime.python",
+      "min": "3.9",
+      "severity": "warn",
+      "label": "python3 present (runs scripts/clean_vtt.py for the ytdlp backend)"
+    },
+    {
+      "use": "custom",
+      "script": "checks/yt-dlp.mjs",
+      "severity": "warn",
+      "label": "yt-dlp on PATH (the ytdlp backend; brew install yt-dlp)"
+    },
+    {
+      "use": "mcp.http_reachable",
+      "url": "https://www.youtube.com",
+      "severity": "warn",
+      "label": "www.youtube.com reachable"
+    }
+  ],
+  "smoke_test": {
+    "command": "node yt.mjs fetch dQw4w9WgXcQ --explain >/dev/null && node yt.mjs ytdlp dQw4w9WgXcQ --explain >/dev/null && node --test test/*.test.mjs",
+    "expect": "both pre-flights render without a network call; unit tests green (the clean_vtt.py test skips if python3 is absent). Needs no node_modules and no yt-dlp"
+  },
+  "do_not_vendor": [
+    "node_modules/",
+    ".env",
+    "output/",
+    "tmp/",
+    "*.log"
+  ],
+  "core": false
+}

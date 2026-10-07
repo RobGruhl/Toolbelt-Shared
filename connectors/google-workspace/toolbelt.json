@@ -1,0 +1,230 @@
+{
+  "name": "google-workspace",
+  "aliases": ["gmail", "workspace-mcp"],
+  "kind": "connector",
+  "description": "Google Workspace (Gmail, Calendar, Drive, Docs, Sheets, Slides, Forms, Tasks, Chat, Contacts, Apps Script) through the workspace-mcp stdio server at its core tool tier, on the operator's own OAuth grant; reads free, every write ungated and named",
+  "hits": "Google Workspace (Gmail, Calendar, Drive, Docs, Sheets, Tasks, Apps Script)",
+  "surface": "registration only (`toolbelt register google-workspace`) — `uvx workspace-mcp==1.25.0 --tool-tier core` runs locally (pinned: verbs[] is a classification of exactly that release) on the operator's OAuth grant and its 45 core tools appear in-session as mcp__google-workspace__<tool>; 25 reads, 20 ungated writes (send_gmail_message, manage_event, modify_sheet_values, update_script_content, …) with no belt code to gate them; the contract is the gate",
+  "platforms": ["darwin"],
+  "origin": {
+    "repo": "/Users/robgruhl/Projects/hello-gmail",
+    "vendored_commit": "f651357",
+    "vendored_at": "2026-08-22",
+    "note": "hello-gmail was a setup/debug scaffold (one CLAUDE.md, an untracked plan.md); its durable facts live in this CLAUDE.md. The server it configures is https://github.com/taylorwilsdon/google_workspace_mcp (PyPI `workspace-mcp`, 1.25.0 at vendoring), run from PyPI by uvx — no server code is vendored. The label taxonomy and triage routine carried into CLAUDE.md come from ~/Projects/gmail (github.com/RobGruhl/gmail-cleanup)"
+  },
+  "runtime": {
+    "python": ">=3.11",
+    "package_manager": "none"
+  },
+  "env": [
+    {
+      "name": "GOOGLE_OAUTH_CLIENT_ID",
+      "required": true,
+      "secret": false,
+      "description": "OAuth client id of the operator's own Desktop-app client in their Google Cloud project (APIs & Services > Credentials). Not a secret by itself, but it is paired with the secret below and lives beside it in the Keychain item"
+    },
+    {
+      "name": "GOOGLE_OAUTH_CLIENT_SECRET",
+      "required": true,
+      "secret": true,
+      "description": "OAuth client secret of that Desktop-app client. Canonical home: macOS Keychain generic-password item service `google-workspace-oauth`; load it into the shell that launches the MCP client with: export GOOGLE_OAUTH_CLIENT_SECRET=\"$(security find-generic-password -s google-workspace-oauth -w)\". Never in ~/.claude.json, ~/.codex/config.toml, or a shell rc file"
+    },
+    {
+      "name": "OAUTHLIB_INSECURE_TRANSPORT",
+      "required": true,
+      "secret": false,
+      "value": "1",
+      "description": "Lets oauthlib accept the server's http://localhost:8000 OAuth callback (loopback only — it is not a remote endpoint). workspace-mcp refuses the first-run consent flow without it"
+    },
+    {
+      "name": "WORKSPACE_MCP_DISABLED_TOOLS",
+      "required": false,
+      "secret": false,
+      "description": "Comma-separated tool names the server refuses to register regardless of tier — the only narrowing knob the belt can apply to a hosted server's writes. Unset by default; see CLAUDE.md \"Narrowing\""
+    }
+  ],
+  "auth": {
+    "principal": "user",
+    "flow": "Google OAuth 2.0 authorization-code flow on the operator's own Desktop-app client: the server opens a browser consent page on first use (or when scopes change), Google redirects to http://localhost:8000/oauth2callback, and the access + refresh tokens are cached per account under ~/.google_workspace_mcp/credentials/. Every API call runs as the operator; the belt holds no credential",
+    "login": "Call any mcp__google-workspace__* read in-session (e.g. list_calendars) — a browser consent page opens; tick EVERY scope checkbox or the grant fails with \"Scope has changed\"",
+    "identity": "ls ~/.google_workspace_mcp/credentials/   (one <account>.json per granted account; never cat it — it holds the refresh token and the client secret)",
+    "caches": [
+      {
+        "path": "~/.google_workspace_mcp/credentials/",
+        "class": "derived",
+        "store": "vendor",
+        "ttl_hours": null,
+        "refresh": "automatic refresh-token grant with no human; a revoked grant re-opens the browser consent on the next call",
+        "revoke": "rm ~/.google_workspace_mcp/credentials/<account>.json, then https://myaccount.google.com/permissions > remove the app",
+        "note": "workspace-mcp writes <account>.json mode 644; it carries refresh_token AND client_secret. chmod 600 it (the doctor's token-cache check warns until you do). GOOGLE_MCP_CREDENTIALS_DIR relocates the dir"
+      },
+      {
+        "path": "keychain: generic-password service=google-workspace-oauth",
+        "class": "static",
+        "store": "keychain",
+        "refresh": "security add-generic-password -U -s google-workspace-oauth -a \"$GOOGLE_OAUTH_CLIENT_ID\" -w   (prompts for the secret; never pass it on argv)",
+        "revoke": "security delete-generic-password -s google-workspace-oauth; then delete the OAuth client in the Cloud console",
+        "note": "the long-lived client secret; the account field holds the client id so one item carries the pair"
+      }
+    ],
+    "note": "OAuth scopes are requested by the server at the core tier (gmail.modify, gmail.send, calendar, drive, docs, spreadsheets, tasks, chat, contacts, script). `--read-only` or `--permissions gmail:drafts …` on the registration narrows the grant itself; the belt keeps the operator's current full core grant and narrows by contract instead (CLAUDE.md)"
+  },
+  "safeguards": [
+    "No local gate is claimed: the belt ships no code on the call path, so it cannot enforce one. The server runs on the operator's own OAuth grant and can do exactly what the operator can do in Google's UI (SENSIBILITIES #13); the belt's contribution is the registration, the verb tiers, the permission profile derived from them, and the contract in CLAUDE.md (SENSIBILITIES #2).",
+    "Every core-tier write is tiered `write` with a note, so repo-integrity names all 20 on every doctor run; none is silently green. Three irreversible ones — update_script_content (full replace), manage_event delete, manage_task delete — are called out in the contract as human-in-UI actions.",
+    "Secrets never enter a config file: the registration carries ${GOOGLE_OAUTH_CLIENT_ID} / ${GOOGLE_OAUTH_CLIENT_SECRET} references that the MCP client expands from the process environment, and the secret's canonical home is the macOS Keychain (checks/smoke.mjs fails the smoke test if a literal ever lands in the registration block) (SENSIBILITIES #6, #11).",
+    "The token cache is the vendor's (~/.google_workspace_mcp/credentials/); checks/token-cache.mjs reports presence, mode and recorded expiry only — never a value — and warns while the file is group/world readable.",
+    "Narrowing is available at the registration, not claimed by default: WORKSPACE_MCP_DISABLED_TOOLS or `--read-only` remove write tools from the server before they reach a session."
+  ],
+  "verbs": [
+    { "name": "search_gmail_messages", "tier": "read", "surface": "mcp", "note": "Gmail search syntax; the triage query is in CLAUDE.md; page_size ≤ 50 per call" },
+    { "name": "get_gmail_message_content", "tier": "read", "surface": "mcp" },
+    { "name": "get_gmail_messages_content_batch", "tier": "read", "surface": "mcp", "note": "≤ 25 ids per call; two batches in parallel trip Google's per-user concurrency limit — serialize" },
+    { "name": "search_drive_files", "tier": "read", "surface": "mcp" },
+    { "name": "get_drive_file_content", "tier": "read", "surface": "mcp" },
+    { "name": "get_drive_file_download_url", "tier": "read", "surface": "mcp" },
+    { "name": "get_drive_shareable_link", "tier": "read", "surface": "mcp", "note": "reads webViewLink and the current permission list; creates no permission (drive_tools.py, 1.25.0)" },
+    { "name": "list_calendars", "tier": "read", "surface": "mcp", "note": "the cheapest live read — the doctor's identity probe" },
+    { "name": "get_events", "tier": "read", "surface": "mcp" },
+    { "name": "get_doc_content", "tier": "read", "surface": "mcp" },
+    { "name": "read_sheet_values", "tier": "read", "surface": "mcp", "note": "fails \"Unable to parse range\" when the tab does not exist — a missing tab, not an empty one" },
+    { "name": "get_messages", "tier": "read", "surface": "mcp", "note": "Google Chat" },
+    { "name": "search_messages", "tier": "read", "surface": "mcp", "note": "Google Chat" },
+    { "name": "get_form", "tier": "read", "surface": "mcp" },
+    { "name": "get_presentation", "tier": "read", "surface": "mcp" },
+    { "name": "get_task", "tier": "read", "surface": "mcp" },
+    { "name": "list_tasks", "tier": "read", "surface": "mcp" },
+    { "name": "search_contacts", "tier": "read", "surface": "mcp" },
+    { "name": "get_contact", "tier": "read", "surface": "mcp" },
+    { "name": "list_contacts", "tier": "read", "surface": "mcp" },
+    { "name": "search_custom", "tier": "read", "surface": "mcp", "note": "Programmable Search; needs the operator's own search-engine id" },
+    { "name": "list_script_projects", "tier": "read", "surface": "mcp" },
+    { "name": "get_script_project", "tier": "read", "surface": "mcp" },
+    { "name": "get_script_content", "tier": "read", "surface": "mcp" },
+    { "name": "generate_trigger_code", "tier": "read", "surface": "mcp", "note": "local code generation; calls no Google API" },
+    { "name": "send_gmail_message", "tier": "write", "surface": "mcp", "note": "sends mail as the operator with no belt gate (no code here to gate in) and no undo; the contract is the gate — compose, show the human the full message and recipients, get an explicit yes for that payload, send once. Default to drafting (the extended tier's draft_gmail_message, or the claude.ai Gmail connector's create_draft) unless the human says send" },
+    { "name": "manage_event", "tier": "write", "surface": "mcp", "note": "create/update/delete/rsvp on the operator's calendars, ungated; `delete` is irreversible and invitees are notified — a human does deletes in Google Calendar. Preview the event, get the yes, run once, re-read with get_events" },
+    { "name": "manage_task", "tier": "write", "surface": "mcp", "note": "create/update/delete Google Tasks, ungated; delete is irreversible — human-in-UI" },
+    { "name": "manage_contact", "tier": "write", "surface": "mcp", "note": "create/update/delete People contacts, ungated; reversible only via Google Contacts' 30-day undo" },
+    { "name": "modify_sheet_values", "tier": "write", "surface": "mcp", "note": "overwrites the named range in place, ungated; Sheets version history is the undo. Always read_sheet_values the range first and show the diff; the cleanup pipeline appends rows, never rewrites existing ones" },
+    { "name": "modify_doc_text", "tier": "write", "surface": "mcp", "note": "edits document text in place, ungated; Docs version history is the undo" },
+    { "name": "create_doc", "tier": "write", "surface": "mcp", "note": "creates a new private Doc in the operator's Drive, ungated; reversible (trash)" },
+    { "name": "create_spreadsheet", "tier": "write", "surface": "mcp", "note": "creates a new private Sheet, ungated; reversible (trash)" },
+    { "name": "create_presentation", "tier": "write", "surface": "mcp", "note": "creates a new private Slides deck, ungated; reversible (trash)" },
+    { "name": "create_form", "tier": "write", "surface": "mcp", "note": "creates a new Form, ungated; reversible (trash)" },
+    { "name": "create_drive_file", "tier": "write", "surface": "mcp", "note": "creates a file in Drive (optionally from a URL — that URL is fetched server-side, an egress), ungated; reversible (trash)" },
+    { "name": "create_drive_folder", "tier": "write", "surface": "mcp", "note": "creates a folder, ungated; reversible" },
+    { "name": "import_to_google_doc", "tier": "write", "surface": "mcp", "note": "uploads local content as a new Doc, ungated; reversible" },
+    { "name": "import_to_google_sheets", "tier": "write", "surface": "mcp", "note": "uploads local content as a new Sheet, ungated; reversible" },
+    { "name": "import_to_google_slides", "tier": "write", "surface": "mcp", "note": "uploads local content as a new deck, ungated; reversible" },
+    { "name": "send_message", "tier": "write", "surface": "mcp", "note": "posts to a Google Chat space as the operator, ungated; other people read it — preview, yes, send once" },
+    { "name": "create_reaction", "tier": "write", "surface": "mcp", "note": "emoji reaction in Google Chat, ungated; reversible in the UI" },
+    { "name": "create_script_project", "tier": "write", "surface": "mcp", "note": "creates an Apps Script project, ungated; reversible (delete in the editor)" },
+    { "name": "update_script_content", "tier": "write", "surface": "mcp", "note": "FULL REPLACE of the project's files — any file absent from `files` is deleted with no undo; always get_script_content first and send back every file (appsscript JSON and every SERVER_JS). The most destructive tool at this tier" },
+    { "name": "run_script_function", "tier": "write", "surface": "mcp", "note": "executes server-side code with whatever scopes the script holds, ungated; answers 403 cross-project unless the script's Cloud project is the OAuth client's — run scripts from the editor instead (CLAUDE.md)" },
+    { "name": "modify_gmail_message_labels", "tier": "never", "surface": "mcp", "note": "extended tier; not loaded at core. Label/archive/trash mutations go through the Apps Script pipeline a human runs (CLAUDE.md)" },
+    { "name": "batch_modify_gmail_message_labels", "tier": "never", "surface": "mcp", "note": "complete tier; not loaded at core" },
+    { "name": "manage_gmail_label", "tier": "never", "surface": "mcp", "note": "extended tier; not loaded at core" },
+    { "name": "manage_gmail_filter", "tier": "never", "surface": "mcp", "note": "extended tier; not loaded at core — a filter acts on every future message" },
+    { "name": "delete_script_project", "tier": "never", "surface": "mcp", "note": "extended tier; not loaded at core" },
+    { "name": "manage_drive_access", "tier": "never", "surface": "mcp", "note": "extended tier; not loaded at core — sharing changes are a human's in the Drive UI" },
+    { "name": "set_drive_file_permissions", "tier": "never", "surface": "mcp", "note": "extended tier; not loaded at core" },
+    { "name": "start_google_auth", "tier": "never", "surface": "mcp", "note": "complete tier; the consent flow starts itself from any read at core" }
+  ],
+  "risk": {
+    "read_only": false,
+    "destructive": true,
+    "idempotent": false,
+    "open_world": false,
+    "worst_case": "mail sent, a calendar event deleted with invitees notified, a sheet range overwritten, or an Apps Script project's files erased by a full-replace update — all under the operator's own Google identity with no belt gate; the belt contributes registration, the tier list and the contract, and the core tier carries no Gmail label/trash tool, so inbox state cannot be destroyed from a session"
+  },
+  "systems": [
+    { "name": "Gmail", "read": "mcp__google-workspace__search_gmail_messages(query=\"in:inbox -label:cleanup-candidate -category:promotions\", page_size=50)", "preferred": true },
+    { "name": "Google Calendar", "read": "mcp__google-workspace__list_calendars()", "preferred": true },
+    { "name": "Google Drive", "read": "mcp__google-workspace__search_drive_files(query=\"name contains 'x'\")", "preferred": true },
+    { "name": "Google Sheets", "read": "mcp__google-workspace__read_sheet_values(spreadsheet_id, range_name=\"Tab!A1:J50\")", "preferred": true },
+    { "name": "Google Docs", "read": "mcp__google-workspace__get_doc_content(document_id)", "preferred": true },
+    { "name": "Google Tasks", "read": "mcp__google-workspace__list_tasks(task_list_id)", "preferred": true },
+    { "name": "Google Apps Script", "read": "mcp__google-workspace__get_script_content(script_id)", "preferred": true }
+  ],
+  "mcp": {
+    "server_name": "google-workspace",
+    "registration": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["workspace-mcp==1.25.0", "--tool-tier", "core"],
+      "env": {
+        "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_OAUTH_CLIENT_ID}",
+        "GOOGLE_OAUTH_CLIENT_SECRET": "${GOOGLE_OAUTH_CLIENT_SECRET}",
+        "OAUTHLIB_INSECURE_TRANSPORT": "1"
+      }
+    },
+    "note": "The ${VAR} references are expanded by the MCP client from the environment it was launched in (Claude Code's documented ${VAR} expansion for mcpServers env); the belt never renders a literal secret into ~/.claude.json. Load the pair before launching the client: export GOOGLE_OAUTH_CLIENT_ID=\"$(security find-generic-password -s google-workspace-oauth | sed -n 's/.*\"acct\"<blob>=\"\\(.*\\)\"/\\1/p')\" GOOGLE_OAUTH_CLIENT_SECRET=\"$(security find-generic-password -s google-workspace-oauth -w)\". Codex reads the same two variables from ~/.codex/config.toml's [mcp_servers.google-workspace.env] — use \"${VAR}\" there too, or an env_keys passthrough where the harness supports one"
+  },
+  "checks": [
+    {
+      "use": "cli.authed",
+      "command": "uvx --version",
+      "label": "uv present (uvx runs workspace-mcp straight from PyPI; nothing is installed globally)",
+      "fix": "brew install uv"
+    },
+    {
+      "use": "cli.authed",
+      "command": "uvx workspace-mcp==1.25.0 --help",
+      "expect": "Google Workspace MCP Server",
+      "severity": "warn",
+      "label": "workspace-mcp resolves and starts (uv cache, PyPI on first run)",
+      "fix": "uvx workspace-mcp==1.25.0 --help   (needs network once to populate the uv cache)"
+    },
+    {
+      "use": "files.env_set",
+      "name": "GOOGLE_OAUTH_CLIENT_ID",
+      "severity": "warn",
+      "label": "GOOGLE_OAUTH_CLIENT_ID in this shell (the MCP client expands ${GOOGLE_OAUTH_CLIENT_ID} from it)",
+      "fix": "export GOOGLE_OAUTH_CLIENT_ID=\"$(security find-generic-password -s google-workspace-oauth | sed -n 's/.*\"acct\"<blob>=\"\\(.*\\)\"/\\1/p')\"   — the client id is the Keychain item's account field"
+    },
+    {
+      "use": "files.env_set",
+      "name": "GOOGLE_OAUTH_CLIENT_SECRET",
+      "severity": "warn",
+      "label": "GOOGLE_OAUTH_CLIENT_SECRET in this shell (presence only; loaded from the Keychain)",
+      "fix": "export GOOGLE_OAUTH_CLIENT_SECRET=\"$(security find-generic-password -s google-workspace-oauth -w)\""
+    },
+    {
+      "use": "secrets.keychain_item",
+      "service": "google-workspace-oauth",
+      "severity": "warn",
+      "label": "OAuth client secret stored in the macOS Keychain (service google-workspace-oauth)",
+      "fix": "security add-generic-password -U -s google-workspace-oauth -a \"<client id>\" -w   (prompts for the secret; never put it on argv). Then remove the plaintext copies from ~/.claude.json and ~/.codex/config.toml"
+    },
+    {
+      "use": "custom",
+      "script": "checks/token-cache.mjs",
+      "severity": "warn",
+      "label": "OAuth token cache (~/.google_workspace_mcp/credentials/<account>.json): present, mode 600, expiry recorded"
+    },
+    {
+      "use": "mcp.registered",
+      "name": "google-workspace",
+      "severity": "warn",
+      "fix": "{TOOLBELT}/bin/toolbelt register google-workspace --write   (interactive; then restart Claude Code)"
+    },
+    {
+      "use": "mcp.http_reachable",
+      "url": "https://oauth2.googleapis.com/tokeninfo",
+      "severity": "warn",
+      "label": "Google OAuth token endpoint reachable (400 = answered; the grant is exercised in-session)"
+    }
+  ],
+  "smoke_test": {
+    "command": "node checks/smoke.mjs",
+    "expect": "the registration block carries ${VAR} references and no literal credential, the verbs[] list covers every core-tier tool of workspace-mcp 1.25.0 with an honest tier, and checks/token-cache.mjs emits a well-formed result — no network, no credential"
+  },
+  "do_not_vendor": [
+    "plan.md (untracked setup worksheet with the operator's GCP project id; its durable facts are in CLAUDE.md)",
+    "tmp/ (empty scratch dir)",
+    "client_secret.json / .env (the OAuth client secret lives in the Keychain)",
+    "~/.google_workspace_mcp/ (vendor token cache and a 2 MB debug log that names accounts and message ids)"
+  ],
+  "core": false
+}

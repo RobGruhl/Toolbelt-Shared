@@ -1,0 +1,129 @@
+{
+  "name": "runway-ai",
+  "aliases": ["rwy", "runway"],
+  "kind": "tool",
+  "description": "Preview-first Runway Dev CLI: credit balance, usage and task lookup for free; text-to-image, text/image-to-video and sound effects spend credits only with --yes, under a per-call credit ceiling, downloading outputs into a contained --out and auditing every paid task",
+  "hits": "Runway Dev API (api.dev.runwayml.com; paid, the operator's own credits)",
+  "surface": "CLI only. `models`, `balance`, `usage`, `task` read. `image`/`video`/`audio` preview (endpoint, model, ratio, duration, credits, output paths) and exit 0; `--yes` submits the task, waits for it, and downloads every output into `--out`; 120 credits per call and 4 images per call are code constants; an audit line per paid task on stderr and in ~/.local/share/runway-ai/audit.log",
+  "readme_label": "`tools/runway-ai` (`rwy`)",
+  "platforms": ["darwin"],
+  "origin": {
+    "repo": "local",
+    "vendored_at": "2026-09-25",
+    "note": "Written in the belt from https://dev.runwayml.com/quickstart.txt and the docs it links (api.md, guides/models.md, guides/pricing.md). The quickstart's `npx skills add runwayml/skills` step is not taken: the belt has one router skill and this CLAUDE.md is the contract. The Runway Dev MCP (OAuth, https://dev.runwayml.com/mcp) is not registered here"
+  },
+  "runtime": {
+    "node": ">=20",
+    "package_manager": "npm"
+  },
+  "install": [
+    {
+      "run": "npm ci",
+      "description": "Install the official @runwayml/sdk locally from the committed lockfile",
+      "why": "every network verb imports it; the SDK sets the X-Runway-Version header and polls tasks",
+      "yes": "node_modules/ is created inside tools/runway-ai; no call to Runway is made",
+      "no": "skipped; `models`, previews and the tests still work, every network verb fails on import"
+    }
+  ],
+  "entrypoints": {
+    "cli": "node rwy.mjs"
+  },
+  "env": [
+    {
+      "name": "RUNWAYML_API_SECRET",
+      "required": false,
+      "secret": true,
+      "description": "Your Runway Dev API key (key_…) from https://dev.runwayml.com, billed to your own credits. Alternatives: ~/.config/toolbelt/runway-ai.key or tools/runway-ai/.env (gitignored), both mode 600. Not needed for `models` or any preview"
+    },
+    {
+      "name": "RUNWAY_AI_HOME",
+      "required": false,
+      "secret": false,
+      "description": "Where audit.log lives. Default ~/.local/share/runway-ai"
+    }
+  ],
+  "auth": {
+    "principal": "user",
+    "flow": "A static API key the operator creates in the Runway Dev portal, billed to their own organization's credits; read from $RUNWAYML_API_SECRET, else a 600-mode key file outside the tree, else the gitignored tools/runway-ai/.env; sent only as the Bearer header by the SDK, never printed, logged or placed on argv",
+    "login": "Create a key at https://dev.runwayml.com → API Keys, then either put RUNWAYML_API_SECRET=key_… in tools/runway-ai/.env (chmod 600) or: mkdir -p ~/.config/toolbelt && umask 077 && printf '%s\\n' 'key_…' > ~/.config/toolbelt/runway-ai.key",
+    "identity": "node rwy.mjs balance",
+    "caches": [
+      {
+        "path": "~/.config/toolbelt/runway-ai.key",
+        "class": "static",
+        "store": "file",
+        "note": "optional 600-mode key file; resolveKey() in rwy.mjs refuses a group/world-readable one",
+        "revoke": "Delete the key at https://dev.runwayml.com, then rm ~/.config/toolbelt/runway-ai.key"
+      },
+      {
+        "path": "tools/runway-ai/.env",
+        "class": "static",
+        "store": "file",
+        "note": "in-tree fallback the operator chose; gitignored by tools/runway-ai/.gitignore, and resolveKey() refuses it unless mode 600; the key_your_… template value counts as absent",
+        "revoke": "Delete the key at https://dev.runwayml.com, then remove the line from tools/runway-ai/.env"
+      }
+    ]
+  },
+  "safeguards": [
+    "Preview by default: image and video print the endpoint, model, ratio, duration, credit cost and its basis, the request body (a data-URI image elided), the output stem and whether a credential was found, then exit 0 without a network call; only --yes submits (rwy.mjs main(), renderPreview()) — the flag tier for paid-but-private spend (SENSIBILITIES #2, #5)",
+    "--yes is always honored: the operator's own credits on a private surface, so the gate prevents the accidental call and never refuses the deliberate one (SENSIBILITIES #2)",
+    "Ceilings are code constants in rwy.mjs that no flag raises: MAX_CREDITS_PER_CALL = 120 and MAX_N = 4 images per call; a request above either is refused with exit 2 naming the constant; before submitting, spend() refuses a call the credit balance cannot cover (SENSIBILITIES #3)",
+    "Only priced models are callable: lib/models.mjs lists each model's ratios, durations and credit formula from the Runway docs; any other --model, ratio or duration is refused before a call, so every submitted task was priced first",
+    "The create call runs with maxRetries 0, so a network retry cannot submit (and bill) a second task; reads keep the SDK's default retries",
+    "Containment: --out <dir> is required to spend, every file is written inside it, --name is [A-Za-z0-9._-] only, the filesystem root and home directory are refused, an existing output stem is refused before any credit is spent, and downloads open with O_EXCL",
+    "Audit line per paid task, on stderr and appended to ~/.local/share/runway-ai/audit.log (dir 700, file 600): timestamp, verb, model, task id, terminal status, estimated and charged credits, files written or the failure text — never the key or the prompt (SENSIBILITIES #7)",
+    "Timeouts: 60 s per HTTP request; task waits of 5 min (image) and 15 min (video); a timed-out or interrupted wait prints the task id and the `rwy task <id> --out` command that collects it without spending again (SENSIBILITIES #8)",
+    "The key comes from $RUNWAYML_API_SECRET, ~/.config/toolbelt/runway-ai.key or the gitignored tools/runway-ai/.env; a group/world-readable file is refused; the preview reports only whether a credential was found and from where (SENSIBILITIES #11)",
+    "The tiers are a table in the code (VERBS in rwy.mjs) and the test suite asserts this manifest's verbs[] matches it"
+  ],
+  "verbs": [
+    { "name": "models", "tier": "read", "surface": "cli", "note": "priced models, ratios, durations and credit rates from lib/models.mjs; no network" },
+    { "name": "balance", "tier": "read", "surface": "cli", "note": "GET /v1/organization — credit balance, monthly cap, per-model tier limits; free" },
+    { "name": "usage", "tier": "read", "surface": "cli", "note": "POST /v1/organization/usage — credits per model per day, up to 90 days; a query, changes nothing" },
+    { "name": "task", "tier": "read", "surface": "cli", "note": "GET /v1/tasks/{id} — status, cost, failure; with --out downloads a succeeded task's outputs (no new spend)" },
+    { "name": "image", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "paid, private: POST /v1/text_to_image (muse_image 1 credit/image, gen4_image ≤8); --ref [tag=]<image> for character/style consistency (gen4_image ≤3 tagged, muse_image ≤10); preview then --yes; n ≤ 4" },
+    { "name": "video", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "paid, private: POST /v1/text_to_video or /v1/image_to_video (gen4.5 12 credits/s, gen4_turbo 5 credits/s, 2–10 s); preview then --yes; ≤120 credits per call" },
+    { "name": "audio", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "paid, private: POST /v1/sound_effect (eleven_text_to_sound_v2, 1 credit/s, 1–30 s, --loop); preview then --yes" },
+    { "name": "task cancel/delete, recipes, characters, routers, uploads, speech/dubbing, workflows", "tier": "never", "surface": "cli", "note": "no verb exists; DELETE /v1/tasks/{id} also deletes a finished task's outputs, and the other surfaces are unpriced here" }
+  ],
+  "risk": {
+    "read_only": false,
+    "destructive": false,
+    "idempotent": false,
+    "open_world": false,
+    "worst_case": "up to 120 credits ($1.20) of the operator's own Runway credits per --yes call, and media files written under a directory the operator named; nothing is deleted or overwritten"
+  },
+  "systems": [
+    {
+      "name": "Runway (AI video and image generation)",
+      "read": "node rwy.mjs balance",
+      "preferred": true
+    }
+  ],
+  "checks": [
+    { "use": "runtime.node", "min": "20" },
+    {
+      "use": "deps.npm_installed",
+      "severity": "warn",
+      "fix": "cd {TOOLBELT}/tools/runway-ai && npm ci   (or: toolbelt setup runway-ai) — the network verbs need @runwayml/sdk; previews and tests do not"
+    },
+    {
+      "use": "mcp.http_reachable",
+      "url": "https://api.dev.runwayml.com",
+      "severity": "warn",
+      "label": "api.dev.runwayml.com reachable"
+    }
+  ],
+  "smoke_test": {
+    "command": "node rwy.mjs models >/dev/null && node rwy.mjs video 'smoke test' --out output | grep -q 'PREVIEW, nothing sent' && node --test test/*.test.mjs",
+    "expect": "the model table renders; a paid verb previews and makes no call; unit tests green — key precedence and mode refusal, ceilings, per-model validation, containment, data-URI elision, manifest/VERBS parity"
+  },
+  "do_not_vendor": [
+    ".env",
+    "node_modules/",
+    "output/",
+    "tmp/",
+    "*.log"
+  ],
+  "core": false
+}

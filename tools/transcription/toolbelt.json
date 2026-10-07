@@ -1,0 +1,126 @@
+{
+  "name": "transcription",
+  "aliases": ["transcribe"],
+  "kind": "tool",
+  "description": "Audio → text CLI: local whisper.cpp (Metal, :2022) by default — free, private, no upload cap; `--backend openai` is an explicit paid opt-in with a pre-call cost estimate, a per-run ceiling, and an audit line per request",
+  "hits": "local whisper.cpp (Voice Mode :2022); OpenAI speech-to-text on opt-in",
+  "surface": "CLI only. `run <file>` is local and free. `run --backend openai` sends the audio off-host and bills your OpenAI account: ffprobe duration → estimate → refused above `--max-usd` (default $1.00) without `--yes`; `--explain` prints the plan and calls nothing; every request appends a line to ~/.local/state/toolbelt/transcribe.log. No write to any shared system exists.",
+  "readme_label": "`tools/transcription` (`transcribe`)",
+  "platforms": ["darwin"],
+  "origin": {
+    "repo": "https://github.com/RobGruhl/hello-transcription.git",
+    "vendored_commit": "4dceed3",
+    "vendored_at": "2026-08-22",
+    "note": "hello-* workshop repo; the OpenAI backend, spend module, ceilings, audit line, tests and doctor checks were added in the belt. The upstream /transcribe skill file was not vendored — the router skill owns the entry point."
+  },
+  "runtime": {
+    "python": ">=3.13",
+    "package_manager": "poetry"
+  },
+  "install": [
+    {
+      "run": "poetry install",
+      "description": "Create the in-project .venv and install httpx, typer, pydantic, pyyaml, rich (+ pytest) from poetry.lock",
+      "why": "the `transcribe` console script and the tests import these; poetry.toml pins the venv to tools/transcription/.venv so nothing is installed globally",
+      "yes": ".venv/ is created inside tools/transcription; no network call to whisper.cpp or OpenAI is made",
+      "no": "skipped; `poetry run transcribe` fails on import until you run it"
+    }
+  ],
+  "entrypoints": {
+    "cli": "poetry run transcribe"
+  },
+  "env": [
+    {
+      "name": "OPENAI_API_KEY",
+      "required": false,
+      "secret": true,
+      "description": "Your own OpenAI API key; needed only for --backend openai. Alternatives, in the order the tool checks: macOS Keychain item with service OPENAI_API_KEY, then ~/.config/toolbelt/transcription.key (mode 600 enforced)"
+    },
+    {
+      "name": "TRANSCRIBE_AUDIT_LOG",
+      "required": false,
+      "secret": false,
+      "description": "Override the audit log path (default ~/.local/state/toolbelt/transcribe.log); tests point it at a temp dir"
+    }
+  ],
+  "auth": {
+    "principal": "user",
+    "flow": "None for the default local backend. For --backend openai: the operator's own OpenAI API key from $OPENAI_API_KEY, the Keychain item OPENAI_API_KEY, or a 600-mode key file; sent as a bearer header, never on argv, never printed or logged (the audit line carries last4 only)",
+    "login": "security add-generic-password -s OPENAI_API_KEY -a \"$USER\" -w   (prompts for the key; or export OPENAI_API_KEY)",
+    "identity": "poetry run transcribe check",
+    "caches": [
+      {
+        "path": "~/.config/toolbelt/transcription.key",
+        "class": "static",
+        "store": "file",
+        "note": "optional 600-mode key file, third in the lookup order; refused when group/world readable",
+        "revoke": "Delete the key at https://platform.openai.com/api-keys; rm the file or `security delete-generic-password -s OPENAI_API_KEY`"
+      }
+    ]
+  },
+  "safeguards": [
+    "Local-first: with no flag the audio never leaves the machine — WhisperCppBackend posts to 127.0.0.1:2022 only; --backend openai is the single, explicit, loud opt-in to off-host egress and spend (SENSIBILITIES #1, #2 flag tier)",
+    "Pre-call cost estimate: spend.ffprobe_duration() reads the duration before any upload and spend.estimate_usd() prices it from RATES_USD_PER_MIN (dated RATES_AS_OF = 2026-08-22, source URL in spend.py); cli._prepare_openai() refuses with exit 2 when the estimate exceeds --max-usd (DEFAULT_MAX_USD = 1.00 in code) or when no duration could be read, unless --yes — which is always honored, because this is private spend (SENSIBILITIES #3, #5)",
+    "--explain pre-flight (cli._print_plan) prints endpoint, model, the exact form fields from OpenAIBackend.request_plan(), file bytes and duration, rate, estimate vs ceiling, key source with the header redacted, and the audit log path; it returns before any network code and writes no audit line (SENSIBILITIES #5)",
+    "Audit line on every request, both backends (spend.append_audit → ~/.local/state/toolbelt/transcribe.log, dir 700, file 600, append-only): timestamp | principal (key last4 or local) | endpoint | model | file name + sha256 + bytes + duration | usage from the response | billed_minutes | est_usd | x-request-id | chunk | status. `transcribe spend` and the doctor's checks/spend.mjs sum the month from it (SENSIBILITIES #7)",
+    "Key handling: spend.resolve_openai_key() checks $OPENAI_API_KEY, then the Keychain item OPENAI_API_KEY, then ~/.config/toolbelt/transcription.key and raises on a group/world-readable file; the key travels only in the Authorization header; no code path prints it and error bodies are truncated (SENSIBILITIES #6, #11)",
+    "Upload cap: a file over OPENAI_MAX_UPLOAD_BYTES (25 MB) is re-encoded once to 16 kHz mono 32 kbps mp3 (processors.ffmpeg.shrink_for_upload) and refused with the ffmpeg split command if still over — never silently split or truncated",
+    "Degraded mode is named: when :2022 is down the local path exits 1 and points at --backend openai as the paid alternative; `transcribe check` reports both backends and this month's estimated spend (SENSIBILITIES #8)",
+    "--paragraphs shells out to the operator's own `claude --print` with a text-only prompt and no permission bypass; transcript text is untrusted input and is never given a tool-capable session",
+    "Read-only toward every external system: the only mutations are the local audit log and the -o output file the operator named"
+  ],
+  "verbs": [
+    { "name": "run", "tier": "read", "surface": "cli", "note": "default --backend local: POST to 127.0.0.1:2022, free, audio stays on the machine; writes only the -o file the operator named plus the audit line" },
+    { "name": "run --backend openai", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "paid + off-host egress on the operator's own key: the flag itself is the opt-in; estimate shown; exit 2 above --max-usd (default $1.00) or with unknown duration unless --yes, which is always honored; audit line per request" },
+    { "name": "run --paragraphs", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "spends the operator's Claude plan via the local `claude --print`; the flag is the opt-in; falls back to the raw text on failure" },
+    { "name": "run --explain", "tier": "read", "surface": "cli", "note": "pre-flight for either backend; no call, no audit line" },
+    { "name": "check", "tier": "read", "surface": "cli", "note": "GET :2022/health; key presence (never the value); month-to-date estimate from the log" },
+    { "name": "spend", "tier": "read", "surface": "cli", "note": "sums est_usd for openai lines in the audit log for one month" },
+    { "name": "presets", "tier": "read", "surface": "cli" },
+    { "name": "realtime / translations / batch", "tier": "never", "surface": "cli", "note": "no code path to the Realtime WebSocket models, /v1/audio/translations, or the Batch API; file transcription only" }
+  ],
+  "risk": {
+    "read_only": false,
+    "destructive": false,
+    "idempotent": true,
+    "open_world": false,
+    "worst_case": "one audio file's bytes uploaded to api.openai.com and up to --max-usd (default $1.00, raised only by an explicit flag) charged to the operator's own OpenAI account per run; nothing shared is written"
+  },
+  "systems": [
+    { "name": "Audio transcription (whisper.cpp local)", "read": "poetry run transcribe run <file>", "preferred": true },
+    { "name": "OpenAI speech-to-text", "read": "poetry run transcribe run <file> --backend openai --explain", "preferred": true }
+  ],
+  "checks": [
+    { "use": "runtime.python", "min": "3.13" },
+    { "use": "runtime.poetry" },
+    { "use": "deps.poetry_env_ready" },
+    { "use": "deps.python_import", "module": "hello_transcription.cli" },
+    {
+      "use": "system.ffmpeg",
+      "severity": "warn",
+      "label": "ffmpeg/ffprobe present (duration → cost estimate; re-encode over 25 MB)",
+      "fix": "brew install ffmpeg — without ffprobe the paid backend requires --yes on every run"
+    },
+    {
+      "use": "mcp.http_reachable",
+      "url": "http://127.0.0.1:2022/health",
+      "severity": "warn",
+      "label": "local whisper.cpp answering on :2022 (the free default)",
+      "fix": "mcp__voice-mode__service whisper start — or use --backend openai (paid)"
+    },
+    { "use": "custom", "script": "checks/openai-key.mjs", "label": "OpenAI key present in env, Keychain, or 600-mode key file (optional)" },
+    { "use": "custom", "script": "checks/spend.mjs", "label": "month-to-date OpenAI spend estimate from the audit log" }
+  ],
+  "smoke_test": {
+    "command": "TRANSCRIBE_AUDIT_LOG=/dev/null poetry run transcribe presets && TRANSCRIBE_AUDIT_LOG=/dev/null poetry run transcribe run tests/fixtures/silence-1s.wav --backend openai --explain && poetry run pytest -q",
+    "expect": "presets render; the OpenAI --explain pre-flight prints the plan and estimate with the key redacted and makes no call; pytest green (ceilings, estimate, audit line format, key resolution, CLI gates) — no network, no credential"
+  },
+  "do_not_vendor": [
+    ".venv/",
+    "tmp/",
+    "output/",
+    "*.log",
+    "~/.local/state/toolbelt/transcribe.log (audit log lives outside the tree)",
+    "~/.config/toolbelt/transcription.key"
+  ]
+}

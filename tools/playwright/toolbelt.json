@@ -1,0 +1,160 @@
+{
+  "name": "playwright",
+  "aliases": ["hp"],
+  "kind": "tool",
+  "description": "Token-cheap browser automation over @playwright/cli (hp): isolated in-memory profile by default, files only under an output dir, and CDP attach to a running Chrome behind a /dev/tty typed-echo gate with --attached-writes on every page action there",
+  "hits": "any web page (an open-world browser); optionally a running Chrome over CDP",
+  "surface": "CLI `hp` + `lib/playwright.js`. Reads (snapshot/screenshot/pdf/console/network/storage reads) are free. Page actions and navigations (open/goto/reload/go-back/go-forward included) run free on the isolated profile and need the loud bare `--attached-writes` on any attached session; `open` on an attached session is refused. `connect` to a real profile (`--cdp=chrome`, a foreign endpoint, `--extension`) makes the human type the target back at /dev/tty, or stages for `toolbelt approve playwright <code>`; an endpoint `launch-debug` opened (tool-owned profile) attaches ungated, but page actions on it need --attached-writes like any attached session. No verb prints a cookie or token value; `kill-all`, `delete-data`, `cookie-get`'s value-printing siblings beyond the listed set are not exposed",
+  "readme_label": "`tools/playwright` (`hp`)",
+  "platforms": ["darwin"],
+  "origin": {
+    "repo": "/Users/robgruhl/Projects/hello-playwright",
+    "vendored_commit": "57c878a",
+    "vendored_at": "2026-08-22",
+    "note": "hello-playwright workshop (thin execSync wrapper + examples + docs). The belt replaced the wrapper's shell-string exec with an argv spawn through hp.mjs, pinned @playwright/cli locally instead of a global install, moved the config to .playwright/cli.config.json with isolated: true, and added connect/launch-debug/approve/status with the gates described in safeguards[]"
+  },
+  "runtime": {
+    "node": ">=20",
+    "package_manager": "npm"
+  },
+  "install": [
+    {
+      "run": "npm install",
+      "description": "Install @playwright/cli (and playwright-core) locally from the committed lockfile",
+      "why": "hp shells out to node_modules/.bin/playwright-cli; the attach/detach verbs need >= 0.1.18, which a global install may not be",
+      "yes": "node_modules/ is created inside tools/playwright from package-lock.json; no browser is downloaded (hp uses the installed Google Chrome channel)",
+      "no": "skipped; every hp verb except --help, status and the unit tests fails with the npm install hint"
+    }
+  ],
+  "entrypoints": {
+    "cli": "node hp.mjs",
+    "approve": "node hp.mjs approve"
+  },
+  "env": [
+    { "name": "HP_HOME", "required": false, "secret": false, "description": "hp's record dir (default ~/.cache/hello-playwright, mode 700): sessions.json (endpoint labels for status and audit lines), audit.log, pending/ staged connects, launched/ Chrome records, profiles/ launch-debug user-data dirs. Not a gate input: whether a session is attached is read from playwright-cli's own registry (keyed to tools/playwright, under the OS cache dir), and nothing under HP_HOME can narrow the gate — every attached session needs --attached-writes" },
+    { "name": "PLAYWRIGHT_OUTPUT_DIR", "required": false, "secret": false, "description": "The only directory screenshots, PDFs, snapshots and saved storage state may land in (default tools/playwright/output, gitignored)" },
+    { "name": "CHROME_PATH", "required": false, "secret": false, "description": "Chrome binary for launch-debug; default search: Chrome for Testing, Google Chrome, Microsoft Edge" },
+    { "name": "PLAYWRIGHT_CLI_SESSION", "required": false, "secret": false, "description": "Default session name for lib/playwright.js callers; hp itself always passes -s explicitly and strips this from the child environment" }
+  ],
+  "auth": {
+    "principal": "user",
+    "flow": "No credential of its own. The isolated profile starts empty every time; anything you sign into there lives in memory until close. An attached browser (connect) carries every session the operator is logged into in that Chrome — all of them at once, under the operator's own identity — which is why attaching is the gated verb",
+    "caches": [
+      { "path": "~/.cache/hello-playwright/profiles/", "class": "session", "store": "file", "note": "launch-debug user-data dirs (700). Whatever you sign into in a launched Chrome persists here; a cookie-encryption key separate from your real profile's. Never your real Chrome profile", "revoke": "hp close --port <port>; rm -rf ~/.cache/hello-playwright/profiles/<name>" },
+      { "path": "~/.cache/hello-playwright/launched/", "class": "session", "store": "file", "note": "port → pid/profile records for Chromes hp spawned; no secret, but marks which loopback endpoints are the tool's own" }
+    ]
+  },
+  "safeguards": [
+    "Isolated by default, and only that config: .playwright/cli.config.json sets browser.isolated=true with no cdpEndpoint/userDataDir, runCli() in hp.mjs pins `--config` to that file on open/attach and strips every PLAYWRIGHT_MCP_*/PLAYWRIGHT_CLI_* variable from the child environment, and findRefusedFlag() exits 2 before anything runs when any verb carries --config, --persistent, --profile, --user-data-dir, --storage-state, --cdp, --endpoint, --extension or --session (connect keeps --cdp/--endpoint/--extension; launch-debug keeps --profile as a name). findRefusedFlag() also refuses every single-character flag key (`--s`, `--g`, `--h`, `--v` are upstream aliases; `--s=real` is `--session=real`) and any positional that starts with a dash, including everything after `--` and negative numbers, because hp forwards positionals verbatim and upstream's parser reads `-s=real`, `--config=x` or `-1` there as options. So no read verb can reach a persistent profile or a CDP endpoint, no page action can be re-pointed at an attached session, and the real Chrome user-data-dir is never a valid profile anywhere (validProfileName accepts one path segment under $HP_HOME/profiles/)",
+    "connect to a real profile (cmdConnect in hp.mjs: --cdp=chrome|msedge, any endpoint hp did not launch, --extension) prints what attaching exposes, then requires the target typed back on /dev/tty — never stdin; --yes/--force are usage errors; with no terminal it stages the request to $HP_HOME/pending/<code>.json (dir 700, file 600, O_EXCL, 15-minute expiry) and exits 3 with `toolbelt approve playwright <code>`",
+    "approve (cmdApprove) opens /dev/tty, shows the staged target, takes the typed echo, replays the connect in-process through a one-shot module-level approval no env var or flag can set, and deletes the record whether or not the attach succeeded; no terminal → exit 4, record kept, never auto-approved",
+    "An endpoint hp itself launched (launch-debug record under $HP_HOME/launched/ with a live pid) attaches without the typed-echo gate because no session of yours is in that profile; once attached it is gated like every attached session (page actions need --attached-writes), since upstream records no endpoint and hp's records are caller-writable, so hp cannot prove which browser an attached session is on",
+    "Page actions and navigations on an attached session (VERBS.interact in hp.mjs: open/goto/reload/go-back/go-forward, click/fill/eval/…) exit 2 without the bare --attached-writes (a value form such as --attached-writes=false is exit 2); the flag is loud and always honored (SENSIBILITIES #2 — a deliberate act is never refused) and every such call writes an audit line; snapshot/screenshot/console/network stay free. Attached-ness is asked of playwright-cli itself (cliAttached(): `list --json`, the registry the action runs against, keyed to the tool dir and outside $HP_HOME) immediately before every page action; if that call fails or returns no browsers[] the action exits 2. Any session playwright-cli reports attached needs the flag — launch-debug Chromes included — because upstream records no endpoint and $HP_HOME is writable by the caller, so no hp record narrows the gate (sessions.json supplies only the endpoint label). runCli() strips PWTEST_* (which relocates that registry) along with PLAYWRIGHT_MCP_*/PLAYWRIGHT_CLI_*. The unit tests reach a fresh record dir only through main()'s in-process env override, which no CLI flag or variable maps to",
+    "Every --filename (screenshot, pdf, snapshot, state-save) is resolved by containFilename() under PLAYWRIGHT_OUTPUT_DIR; an absolute path or a `..` segment is exit 2 and nothing runs",
+    "classifyEndpoint() refuses a non-loopback CDP endpoint without --remote-ok; channels and loopback URLs only by default",
+    "launch-debug spawns Chrome only with --user-data-dir under $HP_HOME/profiles/<name> and --remote-debugging-port, waits for /json/version, kills the process on timeout, and records pid+port; `hp close` detaches an attached session (the external browser keeps running) and quits only a Chrome hp launched",
+    "Audit line (audit() in hp.mjs) to stderr and $HP_HOME/audit.log (600) on connect, detach, launch-debug, close-of-launched and every --attached-writes action: timestamp, verb, session, endpoint, profile class, result — never page content or cookie values (SENSIBILITIES #7)",
+    "The verb table is an allowlist: kill-all, delete-data, show, devtools, tracing/video and the skill installer are not reachable through hp; an unknown verb exits 2 and runs nothing",
+    "playwright-cli is invoked with an argv array (spawnSync), never a shell string, and with NO_UPDATE_NOTIFIER=1 so the wrapper makes no registry call of its own",
+    "Ceilings are code constants (EXEC_TIMEOUT_MS 60s per call, LAUNCH_WAIT_MS 15s, PENDING_TTL_S 15 min); the test suite asserts them (SENSIBILITIES #3)"
+  ],
+  "verbs": [
+    { "name": "open", "tier": "write-gated", "gate": "containment", "surface": "cli", "note": "isolated in-memory profile, config pinned to .playwright/cli.config.json; --headed to watch; --config/--persistent/--profile are exit 2. On a session playwright-cli reports attached it is exit 2 even with --attached-writes, because upstream would stop (detach) that session to start a fresh browser; `close` is the verb for detaching" },
+    { "name": "goto", "tier": "write-gated", "gate": "containment", "surface": "cli", "note": "a navigation under the operator's cookies (logout, unsubscribe, OAuth consent, admin URLs) is an authenticated action: free on the isolated profile, --attached-writes + audit line on an attached session" },
+    { "name": "go-back", "tier": "write-gated", "gate": "containment", "surface": "cli", "note": "as goto" },
+    { "name": "go-forward", "tier": "write-gated", "gate": "containment", "surface": "cli", "note": "as goto" },
+    { "name": "reload", "tier": "write-gated", "gate": "containment", "surface": "cli", "note": "as goto" },
+    { "name": "snapshot", "tier": "read", "surface": "cli", "note": "accessibility tree with refs; --filename lands under the output dir" },
+    { "name": "screenshot", "tier": "read", "surface": "cli", "note": "--filename lands under the output dir only" },
+    { "name": "pdf", "tier": "read", "surface": "cli", "note": "--filename lands under the output dir only" },
+    { "name": "console", "tier": "read", "surface": "cli" },
+    { "name": "network", "tier": "read", "surface": "cli" },
+    { "name": "tab-list", "tier": "read", "surface": "cli" },
+    { "name": "cookie-list", "tier": "read", "surface": "cli", "note": "names/domains of the session's cookies; on an attached real profile this lists your real cookies — treat the output as a secret" },
+    { "name": "cookie-get", "tier": "read", "surface": "cli", "note": "one cookie's value; same caution as cookie-list" },
+    { "name": "localstorage-list", "tier": "read", "surface": "cli" },
+    { "name": "localstorage-get", "tier": "read", "surface": "cli" },
+    { "name": "sessionstorage-list", "tier": "read", "surface": "cli" },
+    { "name": "sessionstorage-get", "tier": "read", "surface": "cli" },
+    { "name": "route-list", "tier": "read", "surface": "cli" },
+    { "name": "state-save", "tier": "read", "surface": "cli", "note": "writes cookies+storage to a file under the output dir only; that file is a session credential — do not commit or share it" },
+    { "name": "list", "tier": "read", "surface": "cli" },
+    { "name": "status", "tier": "read", "surface": "cli", "note": "what playwright-cli reports as attached (the gate's input), hp's endpoint records, and which Chromes hp launched; no network" },
+    { "name": "launch-debug", "tier": "read", "surface": "cli", "note": "Chrome on a loopback debugging port with --user-data-dir under $HP_HOME/profiles/<name>; never the default user-data-dir; prints the endpoint. connect to it is ungated; page actions on it still need --attached-writes" },
+    { "name": "close", "tier": "read", "surface": "cli", "note": "detaches a session playwright-cli reports attached (external browser keeps running); quits a Chrome hp launched; else closes the isolated browser" },
+    { "name": "click", "tier": "write-gated", "gate": "containment", "surface": "cli", "note": "free on the isolated (non-attached) profile; --attached-writes required on any session playwright-cli reports attached, launch-debug Chromes included" },
+    { "name": "dblclick", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "fill", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "type", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "press", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "keydown", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "keyup", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "select", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "check", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "uncheck", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "hover", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "drag", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "upload", "tier": "write-gated", "gate": "containment", "surface": "cli", "note": "sends a local file to the page: egress even on the isolated profile" },
+    { "name": "eval", "tier": "write-gated", "gate": "containment", "surface": "cli", "note": "arbitrary JS in the page" },
+    { "name": "run-code", "tier": "write-gated", "gate": "containment", "surface": "cli", "note": "arbitrary Playwright code against the session" },
+    { "name": "mousemove", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "mousedown", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "mouseup", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "mousewheel", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "dialog-accept", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "dialog-dismiss", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "tab-new", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "tab-close", "tier": "write-gated", "gate": "containment", "surface": "cli", "note": "on an attached browser this closes one of the operator's real tabs" },
+    { "name": "tab-select", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "resize", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "state-load", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "route", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "unroute", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "cookie-set", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "cookie-delete", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "cookie-clear", "tier": "write-gated", "gate": "containment", "surface": "cli", "note": "on an attached real profile this signs you out everywhere in that browser" },
+    { "name": "localstorage-set", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "localstorage-delete", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "localstorage-clear", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "sessionstorage-set", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "sessionstorage-delete", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "sessionstorage-clear", "tier": "write-gated", "gate": "containment", "surface": "cli" },
+    { "name": "connect", "tier": "write-gated", "gate": "typed-echo", "surface": "cli", "note": "-s <name> --cdp=<chrome|msedge|url> | --extension | --endpoint=<ws>; real profile: type the target back at /dev/tty, no --yes, headless → staged for `toolbelt approve playwright <code>`; an endpoint launch-debug opened attaches ungated (its page actions are still gated); non-loopback refused without --remote-ok" },
+    { "name": "approve", "tier": "write-gated", "gate": "tty", "surface": "cli", "note": "what `toolbelt approve playwright <code>` runs: shows the staged target, takes the typed echo on /dev/tty, attaches once, deletes the record; no terminal → exit 4" },
+    { "name": "attach to the real Chrome profile by launching it with a debugging port", "tier": "never", "surface": "cli", "note": "launch-debug accepts only a profile name under $HP_HOME/profiles/; Chrome >= 136 ignores --remote-debugging-port on the default user-data-dir anyway. The only real-profile routes are the human flipping chrome://inspect/#remote-debugging or installing the Bridge extension, then `hp connect` through the typed-echo gate" },
+    { "name": "kill-all / delete-data / show / devtools / tracing / video", "tier": "never", "surface": "cli", "note": "exist in playwright-cli; hp's verb allowlist does not forward them" }
+  ],
+  "risk": {
+    "read_only": false,
+    "destructive": true,
+    "idempotent": false,
+    "open_world": true,
+    "worst_case": "after a human typed the target at /dev/tty and passed --attached-writes per action, an agent clicks or evaluates JS in the operator's real, fully signed-in Chrome under the operator's name — any site, no per-site gate; on the isolated default profile the worst case is a form submitted on the open web from an empty, anonymous browser"
+  },
+  "systems": [
+    { "name": "Web browser (Playwright, isolated profile)", "read": "node hp.mjs open https://example.com && node hp.mjs snapshot", "preferred": true }
+  ],
+  "checks": [
+    { "use": "runtime.node", "min": "20" },
+    {
+      "use": "deps.npm_installed",
+      "fix": "cd {TOOLBELT}/tools/playwright && npm install   (or: toolbelt setup playwright) — installs @playwright/cli 0.1.18+ locally; the attach/detach verbs need it"
+    },
+    { "use": "system.chrome" },
+    { "use": "files.dir_writable", "path": "~/.cache/hello-playwright", "severity": "warn", "label": "state dir ~/.cache/hello-playwright writable (created on first use)", "fix": "mkdir -p ~/.cache/hello-playwright && chmod 700 ~/.cache/hello-playwright" },
+    { "use": "secrets.env_clean", "severity": "warn" }
+  ],
+  "smoke_test": {
+    "command": "node hp.mjs --help >/dev/null && node hp.mjs status >/dev/null && node hp.mjs -s=toolbelt-smoke connect --cdp=chrome --explain >/dev/null && node --test test/hp.test.mjs",
+    "expect": "help and status render; the connect --explain pre-flight prints the gate text and attaches nothing; unit tests green — tiering vs manifest, filename containment, loopback rule, staging, typed echo, --attached-writes read from playwright-cli's registry (a fresh HP_HOME, forged sessions.json+launched/ records, a launch-debug attach and a failed `list` all still refuse), navigation verbs gated, open refused on an attached session, single-character flag keys (`--s=real`) and option-like positionals after `--` refused, `--attached-writes=<value>` refused, approve replay, launch-debug profile refusal, refused re-pointing flags (--config/--persistent/--profile/--cdp/--session), config pin and PLAYWRIGHT_MCP_*/PWTEST_* env strip. The tests isolate hp's records through main()'s in-process env override, never an env var. No browser, no network"
+  },
+  "do_not_vendor": [
+    "node_modules/",
+    "output/",
+    "tmp/",
+    ".playwright-cli/",
+    "*.log",
+    ".env"
+  ],
+  "core": false
+}

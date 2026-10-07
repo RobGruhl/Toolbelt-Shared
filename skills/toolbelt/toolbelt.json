@@ -1,0 +1,95 @@
+{
+  "name": "toolbelt",
+  "kind": "skill",
+  "description": "The one front door: route any read/write/change to the right tool in this belt, run the doctor, and walk the user through fixes",
+  "hits": "this repo",
+  "surface": "router skill + `toolbelt setup toolbelt` (hooks, detect-secrets, skill symlink, offered read-tier permission profile)",
+  "platforms": [
+    "darwin",
+    "win32"
+  ],
+  "origin": {
+    "note": "authored in this kit"
+  },
+  "install": [
+    {
+      "action": "git_config",
+      "key": "core.hooksPath",
+      "value": ".githooks",
+      "description": "Turn on the repo's pre-commit secrets gate for this clone",
+      "why": "If your git host disables push protection, this hook is the only gate you control between a pasted token and a commit that lives forever in history.",
+      "yes": "git runs .githooks/pre-commit before every commit in THIS clone (no other repo is affected); a commit carrying a secret-shaped value is refused and tells you which line",
+      "no": "commits in this clone are unscanned; nothing else changes. The doctor keeps warning until it is set"
+    },
+    {
+      "action": "pipx_ensure",
+      "package": "detect-secrets",
+      "binary": "detect-secrets-hook",
+      "description": "Install the scanner the hook runs (detect-secrets, via pipx)",
+      "why": "The hook refuses to commit rather than silently skip when the scanner is missing — a scan that does nothing reads as a pass.",
+      "yes": "one pipx-managed CLI (detect-secrets, detect-secrets-hook) lands on your PATH; skipped if already there; no global pip, nothing system-wide",
+      "no": "with the hook enabled, every commit in this clone fails until you install it yourself"
+    },
+    {
+      "action": "symlink",
+      "from": "~/.claude/skills/toolbelt",
+      "to": "{TOOLBELT}/skills/toolbelt",
+      "description": "Link the router skill into Claude Code (~/.claude/skills/toolbelt)",
+      "why": "This is what makes 'set up my tools' or 'read me that record' route to the right tool and its contract instead of the agent improvising.",
+      "yes": "a symlink ~/.claude/skills/toolbelt → this repo's skills/toolbelt; an existing real directory there is renamed with a .pre-toolbelt suffix, never deleted",
+      "no": "the skill is not available in Claude Code; the belt still works by hand (bin/toolbelt …)"
+    },
+    {
+      "action": "permissions_offer",
+      "description": "Offer (never impose) a read-only permission profile for Claude Code",
+      "why": "Without it Claude Code asks before every read tool call; the profile is computed from the manifests so only read-tier tools stop prompting and never-tier tools are refused.",
+      "yes": "you see the full rule list first and get a second, separate yes/no; nothing is written at this step",
+      "no": "skipped entirely; Claude Code keeps prompting per call"
+    }
+  ],
+  "checks": [
+    {
+      "use": "files.git_config",
+      "key": "core.hooksPath",
+      "expect": ".githooks",
+      "severity": "warn",
+      "fix": "Run: bin/toolbelt setup toolbelt   (or: git config core.hooksPath .githooks)"
+    },
+    {
+      "use": "runtime.pipx_app",
+      "package": "detect-secrets",
+      "binary": "detect-secrets-hook",
+      "severity": "warn",
+      "fix": "Run: pipx install detect-secrets"
+    },
+    {
+      "use": "files.symlink_valid",
+      "path": "~/.claude/skills/toolbelt",
+      "target": "{TOOLBELT}/skills/toolbelt",
+      "severity": "warn",
+      "fix": "Run: bin/toolbelt setup toolbelt"
+    },
+    {
+      "use": "system.clone_fresh",
+      "behind_max": 20,
+      "severity": "warn"
+    },
+    {
+      "use": "mcp.orphans",
+      "severity": "warn"
+    },
+    {
+      "use": "secrets.rc_clean",
+      "severity": "warn"
+    },
+    {
+      "use": "secrets.env_clean",
+      "severity": "warn",
+      "allow": []
+    },
+    {
+      "use": "secrets.no_tree_secrets"
+    }
+  ],
+  "core": true
+}

@@ -1,0 +1,1097 @@
+#!/usr/bin/env bash
+#
+# hot-bag — keep an Apple Silicon Mac running an unattended job while the lid is
+# closed and it's stowed in a backpack (a.k.a. "hot bagging"): hold the machine
+# awake (hard clamshell override), work over whatever internet you have (iPhone
+# USB tether, Android USB tether, or Wi-Fi hotspot — transparent, no hard
+# requirement on any one), run fine on battery or a USB-C power bank, and log
+# temperature + battery + connectivity every 30s for a full report on stop.
+#
+#   hot-bag start|on   verify internet, disable clamshell sleep, start watchdog
+#                      GATED: a typed "yes" on /dev/tty (then sudo's own prompt).
+#                      --explain prints the plan and changes nothing. No --yes.
+#                      No terminal → the request is STAGED and the command
+#                      `toolbelt approve hot-bag <code>` is printed (exit 2).
+#   hot-bag stop|off   restore sleep, stop watchdog, print the run report
+#                      (--kill-stray-caffeinate also sweeps foreign caffeinate)
+#   hot-bag status     show a live one-shot reading
+#   hot-bag report     print the report for the latest (or a given) run
+#   hot-bag chime      preview the 8-bit lid-close reminder sound
+#   hot-bag doctor     recover a wedged state (restore sleep, clean stale files)
+#   hot-bag approve <code>|--list|--discard <code>
+#                      the human's confirm of a staged start (/dev/tty only)
+#   hot-bag _watch            (internal) the background sampling loop
+#   hot-bag _lidwatch         (internal) plays the chime on lid close during a run
+#   hot-bag _indicator-state  (internal) on|wedged|off for the menu-bar icon
+#
+# Why /dev/tty and not stdin: whoever spawned this process owns its stdin and can
+# pipe "yes" into it. The controlling terminal cannot be forged from a child
+# process — either a human is at it or it does not open. sudo's cached ticket
+# (5 min) would otherwise let a headless caller flip disablesleep with no human
+# in the loop; the typed-yes gate in front of it is what makes `start` a human's
+# act. The restore path (`stop`/`off`, `doctor`) is deliberately UNGATED: a gate
+# on the way back to normal sleep would be a gate on safety.
+#
+# Exit codes: 0 ok · 1 failure / declined · 2 usage, or start STAGED awaiting a
+# human (the approve command is printed).
+#
+# The ONE manual step no command can do for you: turn the tether ON.
+#   - USB tether:  plug the phone in, enable Personal Hotspot / USB tethering.
+#   - Wi-Fi tether: join the phone's hotspot once (or set WIFI_SSID below).
+#
+set -euo pipefail
+
+# In-process approval marker for a staged start. Reset here, unconditionally, so
+# a value inherited from the environment can never pre-approve anything: only
+# the `approve` verb in THIS process, after a typed yes on /dev/tty, sets it.
+_HB_APPROVED=0
+
+# Resolve this script's real directory through any symlink (~/.local/bin/hot-bag) so the
+# gate library loads from the same tree as the script, wherever it was invoked from.
+_hb_src="$0"
+while [ -L "$_hb_src" ]; do
+  _hb_t="$(readlink "$_hb_src")"
+  case "$_hb_t" in /*) _hb_src="$_hb_t" ;; *) _hb_src="$(dirname "$_hb_src")/$_hb_t" ;; esac
+done
+HB_DIR="$(cd "$(dirname "$_hb_src")" && pwd)"
+unset _hb_src _hb_t
+# shellcheck source=lib/gate.sh
+. "$HB_DIR/lib/gate.sh"
+
+# ── configuration (override via env or ~/.config/hot-bag/config) ────────────
+HOTBAG_HOME="${HOTBAG_HOME:-$HOME/.local/state/hot-bag}"
+RUNS_DIR="$HOTBAG_HOME/runs"
+PIDFILE_WATCH="$HOTBAG_HOME/watchdog.pid"
+PIDFILE_CAFF="$HOTBAG_HOME/caffeinate.pid"
+PIDFILE_LID="$HOTBAG_HOME/lidwatch.pid"     # lid-close chime watcher
+CHIME_WAV="$HOTBAG_HOME/chime.wav"          # cached generated 8-bit chime
+CURRENT_RUN="$HOTBAG_HOME/current-run"      # holds path to the active CSV
+LOCKDIR="$HOTBAG_HOME/.lock"                # prevents overlapping start/stop
+SLEEP_GUARD="$HOTBAG_HOME/disablesleep.on"  # marker that we set disablesleep=1
+PENDING_DIR="$HOTBAG_HOME/pending"          # staged starts awaiting `approve` (dir 700, files 600)
+AUDIT_LOG="$HOTBAG_HOME/audit.log"          # one line per pmset mutation: ts verb target result
+PENDING_TTL_S=900                           # a staged start expires after 15 minutes
+
+INTERVAL="${INTERVAL:-30}"                   # seconds between samples
+WARN_C="${WARN_C:-80}"                        # °C: start paying attention
+HOT_C="${HOT_C:-90}"                          # °C: getting uncomfortable
+CRIT_C="${CRIT_C:-95}"                         # °C: too hot — open the bag
+PING_HOST="${PING_HOST:-1.1.1.1}"
+
+# Optional Wi-Fi fallback: if the link drops and these are set, the watchdog
+# will try to rejoin this hotspot. Leave blank to disable.
+WIFI_SSID="${WIFI_SSID:-}"
+WIFI_PASSWORD="${WIFI_PASSWORD:-}"
+
+# Optional low-battery safety: 'sleep' lets the Mac sleep (state preserved) when
+# on battery below LOW_BATT_PCT, instead of risking a hard power-off. 'none' just
+# logs/warns. Default none — we don't want to pause your job uninvited.
+LOW_BATT_ACTION="${LOW_BATT_ACTION:-none}"
+LOW_BATT_PCT="${LOW_BATT_PCT:-7}"
+
+# Lid-close chime: play an 8-bit sound when you close the lid while hot bagging,
+# as a last audible reminder before the Mac goes in the bag. 'on' (default) plays
+# the built-in chiptune; 'off' disables it. LID_CHIME_FILE points at your own
+# audio file (any format afplay understands) to override the built-in sound.
+# LID_CHIME_VOLUME is 0.0–1.0 passed to afplay -v (blank = system volume).
+# LID_CHIME_UNMUTE: if 'on' (default) and the Mac is muted, temporarily unmute
+# JUST for the chime and restore the exact prior mute/volume right after — so a
+# deliberate mute is respected everywhere except that one beep. 'off' plays into
+# the mute (silent) and never touches your audio settings.
+LID_CHIME="${LID_CHIME:-on}"
+LID_CHIME_FILE="${LID_CHIME_FILE:-}"
+LID_CHIME_VOLUME="${LID_CHIME_VOLUME:-}"
+LID_CHIME_UNMUTE="${LID_CHIME_UNMUTE:-on}"
+
+[ -f "$HOME/.config/hot-bag/config" ] && . "$HOME/.config/hot-bag/config"
+
+# Validate numeric config — these all get used in arithmetic ($((...))) or
+# integer comparisons. A bad value here would otherwise blow up the watchdog
+# at an arbitrary later moment.
+for _v in INTERVAL WARN_C HOT_C CRIT_C LOW_BATT_PCT; do
+  case "${!_v}" in
+    ''|*[!0-9]*) printf '\033[1;31m✗\033[0m Invalid %s=%s — must be a positive integer\n' "$_v" "${!_v}" >&2; exit 2 ;;
+    0)           printf '\033[1;31m✗\033[0m Invalid %s=0 — must be greater than zero\n'    "$_v"          >&2; exit 2 ;;
+  esac
+done
+unset _v
+
+mkdir -p "$RUNS_DIR"
+
+# ── pretty output ───────────────────────────────────────────────────────────
+log()  { printf '\033[1;34m▸\033[0m %s\n' "$*"; }
+ok()   { printf '\033[1;32m✓\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m!\033[0m %s\n' "$*"; }
+err()  { printf '\033[1;31m✗\033[0m %s\n' "$*" >&2; }
+
+# ── human gate + audit ──────────────────────────────────────────────────────
+# tty_has / tty_read / tty_yes come from lib/gate.sh (sourced at load): they open
+# /dev/tty directly; stdin is never consulted because a spawner owns stdin.
+# audit <verb> <target> <result>: append one grep-able line to $AUDIT_LOG and
+# echo it to stderr. Never a secret — there is none in this tool.
+audit() {
+  local line; line="[hot-bag audit] $(date -u '+%Y-%m-%dT%H:%M:%SZ') verb=$1 target=\"$2\" result=$3"
+  printf '%s\n' "$line" >&2
+  { umask 077; printf '%s\n' "$line" >> "$AUDIT_LOG"; } 2>/dev/null || true
+}
+# The one mutation this tool makes outside its own state dir. Every call site
+# goes through here so the audit line cannot be skipped.
+pmset_disablesleep() { # arg: 0|1 ; returns sudo's status
+  local v="$1" rc=0
+  sudo pmset -a disablesleep "$v" || rc=$?
+  audit "pmset" "disablesleep=$v" "$([ "$rc" = 0 ] && echo ok || echo "failed($rc)")"
+  return "$rc"
+}
+
+# ── concurrency + PID safety ────────────────────────────────────────────────
+acquire_lock() {
+  mkdir "$LOCKDIR" 2>/dev/null || { err "Another hot-bag command appears to be running (lock held at $LOCKDIR). If you're sure none is, remove that directory."; exit 1; }
+}
+release_lock() { rmdir "$LOCKDIR" 2>/dev/null || true; }
+# kill -0 only proves a PID exists; this proves it's actually ours.
+safe_ps_match() { local pid="$1" pat="$2"; ps -o command= -p "$pid" 2>/dev/null | grep -q -- "$pat"; }
+
+# Is the watchdog actually alive and ours? (PID exists AND command matches.)
+watchdog_alive() {
+  [ -f "$PIDFILE_WATCH" ] || return 1
+  local p; p="$(cat "$PIDFILE_WATCH" 2>/dev/null || true)"
+  [ -n "$p" ] && kill -0 "$p" 2>/dev/null && safe_ps_match "$p" "hot-bag _watch"
+}
+
+# ── admin / privilege preflight ───────────────────────────────────────────────
+# On managed Macs the user is a STANDARD user until they temporarily elevate
+# (commonly via SAP's Privileges.app). If we call `sudo` while not in the admin
+# group, sudo itself prints a hostile "you are not in the sudoers file; this
+# incident will be reported" — useless to the user. So we check group membership
+# FIRST and, if needed, offer to elevate via Privileges before any sudo runs.
+
+# True if the current user is in the admin group RIGHT NOW. Uses dseditgroup
+# (live directory state) rather than `id` (process groups, stale until re-login)
+# so it reflects an elevation that just happened — which is also what sudo sees.
+is_admin() { dseditgroup -o checkmember -m "$(id -un)" admin 2>/dev/null | grep -q '^yes'; }
+
+# Path to SAP Privileges' CLI, if installed. Empty string if not found.
+privileges_cli() {
+  local p
+  for p in /usr/local/bin/PrivilegesCLI \
+           /Applications/Privileges.app/Contents/MacOS/PrivilegesCLI \
+           "$HOME/Applications/Privileges.app/Contents/MacOS/PrivilegesCLI"; do
+    [ -x "$p" ] && { echo "$p"; return 0; }
+  done
+  return 1
+}
+
+# Make sure we have admin rights before a sudo call. Returns 0 if elevated (now
+# or already), non-zero if the caller should abort the privileged step.
+#   arg1: short description of what needs admin (shown to the user)
+ensure_admin() {
+  if is_admin; then return 0; fi
+  local what="${1:-the privileged step}"
+  local cli; cli="$(privileges_cli || true)"
+
+  warn "Needs temporary admin rights for: $what"
+  warn "You are a standard user right now${cli:+ (SAP Privileges)}."
+
+  # Can't or shouldn't drive it ourselves: no Privileges CLI, or no TTY to
+  # prompt on. Tell the user exactly what to do and bail BEFORE sudo scolds them.
+  if [ -z "$cli" ] || ! tty_has; then
+    err "Grant admin first, then rerun:"
+    if [ -n "$cli" ]; then
+      err "  • click the Privileges item in your menu bar, OR"
+      err "  • run:  $cli --add"
+    else
+      err "  • use your Privileges menu-bar item, or log in as an admin user"
+    fi
+    return 1
+  fi
+
+  # Read from /dev/tty, not stdin: the elevation is the user's call every time.
+  # `|| ans=` so an EOF (Ctrl-D) doesn't trip `set -e` in the caller — it just
+  # falls through to the default "no".
+  local ans=""; ans="$(tty_read $'\n  Elevate via Privileges now? [y/N] ')" || ans=""
+  case "$ans" in
+    [yY]|[yY][eE][sS]) ;;
+    *) err "Not elevating. Grant admin yourself ($cli --add) and rerun."; return 1 ;;
+  esac
+
+  log "Requesting admin via PrivilegesCLI…"
+  "$cli" --add --reason "hot-bag: hold the Mac awake for an unattended run" >/dev/null 2>&1 \
+    || "$cli" --add >/dev/null 2>&1 || true
+
+  # Privileges applies the group change asynchronously; poll until it lands.
+  local tries=0
+  while ! is_admin && [ "$tries" -lt 20 ]; do sleep 0.25; tries=$((tries+1)); done
+
+  if is_admin; then ok "You are now admin (Privileges) — continuing"; return 0; fi
+  err "Elevation did not take. Grant admin via the Privileges menu-bar item and rerun."
+  return 1
+}
+
+# ── telemetry readers (all sudo-free, so the watchdog never needs a password) ─
+read_cpu_c() { # real °C via smctemp; NA if unavailable/invalid
+  command -v smctemp >/dev/null 2>&1 || { echo NA; return; }
+  local v; v="$(smctemp -c -i25 -n40 2>/dev/null | tr -dc '0-9.')"
+  awk -v x="$v" 'BEGIN{exit !(x+0>0)}' && echo "$v" || echo NA
+}
+read_gpu_c() {
+  command -v smctemp >/dev/null 2>&1 || { echo NA; return; }
+  local v; v="$(smctemp -g -i25 -n40 2>/dev/null | tr -dc '0-9.')"
+  awk -v x="$v" 'BEGIN{exit !(x+0>0)}' && echo "$v" || echo NA
+}
+read_speed_limit() { # <100 means the OS is throttling (heat or power starvation)
+  local v; v="$(pmset -g therm 2>/dev/null | awk -F= '/CPU_Speed_Limit/{gsub(/[^0-9]/,"",$2);print $2}')"
+  echo "${v:-100}"
+}
+read_batt_pct()  { pmset -g batt 2>/dev/null | grep -Eo '[0-9]+%' | head -1 | tr -d '%'; }
+read_power_src() { pmset -g batt 2>/dev/null | awk -F\' 'NR==1{print $2}'; }  # AC Power / Battery Power
+read_net_iface() { route -n get default 2>/dev/null | awk '/interface:/{print $2}'; }
+net_up() { ping -c1 -t3 "$PING_HOST" >/dev/null 2>&1; }
+# Cumulative rx/tx bytes for an interface (since it came up). Echoes "rx tx".
+# Looks up the Ibytes/Obytes columns by name in the header so we don't break
+# when macOS shifts netstat's column positions between releases.
+read_iface_bytes() {
+  local dev="$1"; [ -z "$dev" ] && { echo "0 0"; return; }
+  local out
+  out="$(netstat -ibnI "$dev" 2>/dev/null | awk '
+    NR==1 { for (i=1;i<=NF;i++) { if ($i=="Ibytes") ib=i; if ($i=="Obytes") ob=i } }
+    /<Link/ && ib && ob { print $ib " " $ob; exit }
+  ')"
+  echo "${out:-0 0}"
+}
+# Humanize a byte count, e.g. 2202010 -> "2.1 MB".
+human_bytes() { awk -v b="${1:-0}" 'BEGIN{nn=split("B KB MB GB TB",u," ");i=1;while(b>=1024&&i<nn){b/=1024;i++}printf "%.1f %s",b,u[i]}'; }
+# Data used over a run's CSV (per-interface delta, summed). Echoes "totrx tottx".
+# Optional live sample (dev rx tx) is folded in to extend the delta to "now".
+run_data_used() { # args: csv [dev rx tx]
+  awk -F, -v ld="${2:-}" -v lr="${3:-0}" -v lt="${4:-0}" '
+    NR>1{
+      if($11+0>0){if(!($9 in rxlo)||$11+0<rxlo[$9])rxlo[$9]=$11+0; if($11+0>rxhi[$9])rxhi[$9]=$11+0}
+      if($12+0>0){if(!($9 in txlo)||$12+0<txlo[$9])txlo[$9]=$12+0; if($12+0>txhi[$9])txhi[$9]=$12+0}
+    }
+    END{
+      if(ld!="" && lr+0>0){
+        if(!(ld in rxlo)||lr+0<rxlo[ld])rxlo[ld]=lr+0; if(lr+0>rxhi[ld])rxhi[ld]=lr+0;
+        if(!(ld in txlo)||lt+0<txlo[ld])txlo[ld]=lt+0; if(lt+0>txhi[ld])txhi[ld]=lt+0;
+      }
+      for(i in rxhi)totrx+=rxhi[i]-rxlo[i];
+      for(i in txhi)tottx+=txhi[i]-txlo[i];
+      print totrx" "tottx;
+    }' "$1"
+}
+
+wifi_dev()       { networksetup -listallhardwareports 2>/dev/null | awk '/Wi-Fi|AirPort/{getline;print $2}'; }
+iphone_usb_dev() { networksetup -listallhardwareports 2>/dev/null | awk '/iPhone USB/{getline;print $2}'; }
+
+# Human label for the active link, e.g. "en6 (iPhone USB)" or "en0 (Wi-Fi)".
+iface_label() {
+  local dev="$1" line
+  [ -z "$dev" ] && { echo "none"; return; }
+  line="$(networksetup -listallhardwareports 2>/dev/null \
+          | awk -v d="$dev" 'BEGIN{RS=""} $0 ~ ("Device: " d "($|\n)") {print}' \
+          | awk -F': ' '/Hardware Port/{print $2; exit}')"
+  echo "$dev (${line:-link})"
+}
+
+# Derive a state label from the hottest sensor + throttle flag.
+thermal_state() { # args: cpu gpu speedlimit
+  awk -v c="$1" -v g="$2" -v sl="$3" -v w="$WARN_C" -v h="$HOT_C" -v cr="$CRIT_C" 'BEGIN{
+    # If we have no temperature data at all, do NOT claim OK — this is a
+    # thermal-safety tool and a false "OK" is the worst kind of lie. The
+    # throttle signal is still meaningful on its own, so surface that.
+    if (c=="NA" && g=="NA") {
+      print (sl+0<100 ? "THROTTLED" : "UNKNOWN");
+      exit;
+    }
+    m=0; if(c!="NA"&&c+0>m)m=c+0; if(g!="NA"&&g+0>m)m=g+0;
+    s="OK";
+    if(m>=w)s="WARM"; if(m>=h)s="HOT"; if(m>=cr)s="CRITICAL";
+    if(sl+0<100 && s=="OK")s="THROTTLED";
+    print s;
+  }'
+}
+
+# ── lid-close chime ───────────────────────────────────────────────────────────
+# Play an 8-bit sound the moment the lid closes during a run — the last audible
+# "yes, hot-bag is still going" before the Mac disappears into the bag. Runs as a
+# tiny sudo-free background loop (`_lidwatch`) lifecycled to the watchdog, exactly
+# like caffeinate: if the watchdog dies, the lid watcher exits too.
+
+# Clamshell state, sudo-free. Echoes "closed", "open", or "unknown".
+# AppleClamshellState flips No→Yes when the lid shuts (readable without admin).
+lid_state() {
+  local v
+  v="$(ioreg -r -k AppleClamshellState -d 4 2>/dev/null \
+       | awk -F'= ' '/"AppleClamshellState"/{gsub(/[^A-Za-z]/,"",$2); print $2; exit}')"
+  case "$v" in
+    Yes) echo closed ;;
+    No)  echo open ;;
+    *)   echo unknown ;;
+  esac
+}
+
+# The sound file to play: an explicit LID_CHIME_FILE, else the generated chiptune.
+chime_file() {
+  if [ -n "$LID_CHIME_FILE" ]; then echo "$LID_CHIME_FILE"; return; fi
+  [ -s "$CHIME_WAV" ] || generate_chime "$CHIME_WAV"
+  echo "$CHIME_WAV"
+}
+
+# Synthesize a classic rising 8-bit square-wave arpeggio (C5-E5-G5-C6) as an
+# 8-bit unsigned PCM WAV. Pure perl + core modules, no third-party deps — matches
+# the repo's "no installs" ethos. Cached; only regenerated if missing.
+generate_chime() { # arg: output path
+  local out="$1"
+  command -v perl >/dev/null 2>&1 || { err "perl not found — cannot generate the chime"; return 1; }
+  perl - "$out" <<'PERL'
+my $out = $ARGV[0] or exit 1;
+my $SR  = 11025;                 # low rate = crunchy chiptune feel
+my $amp = 90;                    # 0..127; below full-scale so it isn't harsh
+my @notes = ([523,90],[659,90],[784,90],[1047,160]);   # C5 E5 G5 C6 (ms each)
+my $data = "";
+for my $n (@notes) {
+  my ($f,$ms) = @$n;
+  my $samples = int($SR * $ms / 1000);
+  my $period  = $SR / $f;
+  for (my $i=0; $i<$samples; $i++) {
+    my $hi  = (($i % $period) < ($period/2));           # square wave
+    my $env = 1 - ($i/$samples)*0.15;                   # gentle fade to cut clicks
+    my $v = 128 + ($hi ? 1 : -1) * int($amp*$env);
+    $v = 0 if $v < 0; $v = 255 if $v > 255;
+    $data .= chr($v);
+  }
+}
+my $dlen = length($data);
+open my $fh, '>:raw', $out or exit 1;
+print $fh "RIFF", pack('V', 36 + $dlen), "WAVE";
+print $fh "fmt ", pack('V',16), pack('v',1), pack('v',1);   # PCM, mono
+print $fh pack('V',$SR), pack('V',$SR), pack('v',1), pack('v',8);  # rate, byterate, blockalign, bits
+print $fh "data", pack('V',$dlen), $data;
+close $fh;
+PERL
+}
+
+# afplay the file once, honoring LID_CHIME_VOLUME. Foreground (blocks) so a
+# caller that unmuted first can safely re-mute only after the sound has finished.
+afplay_once() { # arg: file
+  if [ -n "$LID_CHIME_VOLUME" ]; then
+    afplay -v "$LID_CHIME_VOLUME" "$1" >/dev/null 2>&1
+  else
+    afplay "$1" >/dev/null 2>&1
+  fi
+}
+
+# Play the chime with a mute-scoped unmute: if the Mac is muted and
+# LID_CHIME_UNMUTE is on, save the current mute+volume, unmute (nudging volume up
+# if it's at 0) JUST for this beep, play in the FOREGROUND, then restore the
+# EXACT prior state — so the sound is heard but a deliberate mute is left
+# untouched everywhere else. If not muted (or unmute disabled), just play.
+# Every step is guarded with `|| true` so a nonzero osascript/afplay can never
+# abort this mid-way under `set -e` and strand the Mac unmuted; the restore
+# always runs. Blocks for the ~0.5s chime, which is fine in _lidwatch and chime.
+play_chime_scoped() { # arg: file
+  local f="$1"
+  local saved_m="" saved_v="" settings=""
+  if [ "$LID_CHIME_UNMUTE" != off ] && command -v osascript >/dev/null 2>&1; then
+    settings="$(osascript -e 'set s to (get volume settings)' \
+                          -e 'return (output muted of s as text) & " " & (output volume of s as text)' 2>/dev/null || true)"
+    saved_m="${settings%% *}"; saved_v="${settings##* }"
+  fi
+  if [ "$saved_m" != true ]; then
+    afplay_once "$f"; return 0
+  fi
+  # Muted + unmute enabled: unmute, (nudge volume off 0), play, then restore.
+  osascript -e 'set volume output muted false' >/dev/null 2>&1 || true
+  case "$saved_v" in ''|0) osascript -e 'set volume output volume 25' >/dev/null 2>&1 || true ;; esac
+  afplay_once "$f" || true
+  # Restore: volume first (setting a numeric volume implicitly clears mute), then
+  # re-apply the mute the user had. Only touch volume if we have a valid number.
+  case "$saved_v" in ''|*[!0-9]*) ;; *) osascript -e "set volume output volume $saved_v" >/dev/null 2>&1 || true ;; esac
+  osascript -e 'set volume output muted true' >/dev/null 2>&1 || true
+}
+
+# Play the chime once, best-effort. Never errors out the caller. Respects
+# LID_CHIME=off. Backgrounds the scoped play so the caller (the lid loop) isn't
+# blocked for the duration of the tone.
+play_chime() {
+  [ "$LID_CHIME" = off ] && return 0
+  command -v afplay >/dev/null 2>&1 || return 0
+  local f; f="$(chime_file)"
+  [ -n "$f" ] && [ -f "$f" ] || return 0
+  play_chime_scoped "$f" &
+}
+
+# Background lid watcher: chime on each open→closed transition while the run is
+# live. Sudo-free and self-terminating — polls fast (2s) so it fires before the
+# lid is actually in the bag, and exits the instant the watchdog goes away.
+_lidwatch() {
+  set +eo pipefail
+  # Seed with the current state so we only chime on a genuine *transition*, not
+  # if the lid was already shut when the run started.
+  local prev; prev="$(lid_state)"
+  while watchdog_alive; do
+    local now; now="$(lid_state)"
+    if [ "$now" = closed ] && [ "$prev" != closed ]; then
+      play_chime
+    fi
+    [ "$now" = unknown ] || prev="$now"   # ignore transient unknowns, keep last real state
+    sleep 2
+  done
+}
+
+# Play the lid-close chime once, on demand, so you can hear it without a run.
+chime_preview() {
+  if [ "$LID_CHIME" = off ]; then
+    warn "LID_CHIME is off — no sound will play on lid close. Set LID_CHIME=on to enable it."
+    return 0
+  fi
+  if ! command -v afplay >/dev/null 2>&1; then
+    err "afplay not found — cannot play the chime on this system."
+    return 1
+  fi
+  local f; f="$(chime_file)"
+  if [ -z "$f" ] || [ ! -f "$f" ]; then
+    err "Could not produce a chime file."
+    return 1
+  fi
+  log "Playing lid-close chime: $f"
+  # Foreground (via the scoped player) so the command doesn't return before you
+  # hear it, and so the preview matches the real behavior — including the
+  # temporary unmute if you're muted and LID_CHIME_UNMUTE is on.
+  play_chime_scoped "$f"
+  ok "That's the sound you'll hear when you close the lid mid-run."
+}
+
+# ── the background watchdog ─────────────────────────────────────────────────
+_watch() {
+  local logf="$1"
+  # Degraded mode: if this loop dies for any reason other than a clean `stop`
+  # (crash, kill, logout), try to put sleep back WITHOUT a password. `sudo -n`
+  # succeeds only where a passwordless pmset rule exists; otherwise the override
+  # stays on, the state reads "wedged" (status / the menu-bar ⚠️), and
+  # `hot-bag off` / `hot-bag doctor` is the restore path. The attempt and its
+  # outcome are audited either way so "why is my Mac still awake" is one grep.
+  trap '
+    if [ -f "$SLEEP_GUARD" ]; then
+      if sudo -n pmset -a disablesleep 0 >/dev/null 2>&1; then
+        rm -f "$SLEEP_GUARD"; audit "watchdog-exit" "disablesleep=0" "restored"
+      else
+        audit "watchdog-exit" "disablesleep=0" "not-restored(no passwordless sudo) — run: hot-bag off"
+      fi
+    fi
+  ' EXIT TERM HUP INT
+  # CSV header
+  echo "epoch,iso,cpu_c,gpu_c,state,cpu_speed_limit,battery_pct,power_source,net_iface,net_status,rx_bytes,tx_bytes" > "$logf"
+  local low_batt_tripped=0
+  # Disable strict mode for the sampling loop. Telemetry sources are flaky on
+  # purpose (network interface vanishes during failover, smctemp returns 0,
+  # pmset output shifts) and a missed sample is far better than a dead
+  # watchdog. Every reader below already has a fallback string ("NA", "0 0",
+  # "100", empty); set +e just stops the first transient failure from
+  # killing the whole logger.
+  set +eo pipefail
+  while :; do
+    local epoch iso cpu gpu sl batt psrc dev nstat state rxtx rx tx
+    epoch="$(date +%s)"; iso="$(date '+%Y-%m-%dT%H:%M:%S')"
+    cpu="$(read_cpu_c)"; gpu="$(read_gpu_c)"; sl="$(read_speed_limit)"
+    batt="$(read_batt_pct)"; psrc="$(read_power_src)"; dev="$(read_net_iface)"
+    rxtx="$(read_iface_bytes "$dev")"; rx="${rxtx% *}"; tx="${rxtx#* }"
+    if net_up; then nstat="up"; else nstat="down"; fi
+    state="$(thermal_state "$cpu" "$gpu" "$sl")"
+    echo "$epoch,$iso,$cpu,$gpu,$state,$sl,${batt:-NA},${psrc:-NA},${dev:-none},$nstat,${rx:-0},${tx:-0}" >> "$logf"
+
+    # Resilience: try to rejoin Wi-Fi if the link is down and a fallback is set.
+    # Rate-limit to roughly once every 10 samples to avoid hammering networksetup
+    # (and flapping the Wi-Fi device) when the hotspot is genuinely off.
+    if [ "$nstat" = "down" ] && [ -n "$WIFI_SSID" ] \
+       && [ $((epoch % (INTERVAL * 10))) -lt "$INTERVAL" ]; then
+      local wd; wd="$(wifi_dev)"
+      [ -n "$wd" ] && networksetup -setairportnetwork "$wd" "$WIFI_SSID" "$WIFI_PASSWORD" >/dev/null 2>&1 || true
+    fi
+
+    # Resilience: optional graceful sleep before the battery dies hard.
+    if [ "$LOW_BATT_ACTION" = "sleep" ] && [ "$psrc" = "Battery Power" ] \
+       && [ "${batt:-100}" -le "$LOW_BATT_PCT" ] && [ "$low_batt_tripped" -eq 0 ]; then
+      low_batt_tripped=1
+      if sudo -n pmset -a disablesleep 0 >/dev/null 2>&1; then   # let it sleep gracefully
+        rm -f "$SLEEP_GUARD"; audit "low-battery" "disablesleep=0" "restored"
+      else
+        audit "low-battery" "disablesleep=0" "not-restored(no passwordless sudo)"
+      fi
+    fi
+    sleep "$INTERVAL"
+  done
+}
+
+# ── staging (headless callers) ──────────────────────────────────────────────
+# A `start` with no controlling terminal cannot be confirmed, so it is STAGED:
+# a 600-mode record under $PENDING_DIR/<code> holding the verb and a timestamp
+# (never a secret — this tool has none), and the one command a human runs in a
+# real terminal is printed. Records expire after PENDING_TTL_S and are pruned on
+# every touch; approve deletes the record whether or not the start succeeds.
+prune_pending() {
+  [ -d "$PENDING_DIR" ] || return 0
+  local f now; now="$(date +%s)"
+  for f in "$PENDING_DIR"/*; do
+    [ -f "$f" ] || continue
+    local ts; ts="$(awk -F= '/^staged_epoch=/{print $2}' "$f" 2>/dev/null || true)"
+    case "$ts" in ''|*[!0-9]*) rm -f "$f"; continue ;; esac
+    [ $((now - ts)) -gt "$PENDING_TTL_S" ] && rm -f "$f"
+  done
+  return 0
+}
+new_code() { LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 6; }
+stage_start() {
+  ( umask 077; mkdir -p "$PENDING_DIR"; chmod 700 "$PENDING_DIR" )
+  prune_pending
+  local code f
+  for _ in 1 2 3 4 5; do
+    code="$(new_code)"; f="$PENDING_DIR/$code"
+    ( umask 077; set -C; : > "$f" ) 2>/dev/null && break
+    code=""
+  done
+  [ -n "$code" ] || { err "Could not create a staging record under $PENDING_DIR"; exit 1; }
+  {
+    echo "verb=start"
+    echo "staged_epoch=$(date +%s)"
+    echo "staged_iso=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    echo "cwd=$PWD"
+  } > "$f"
+  audit "start" "staged=$code" "pending_confirmation"
+  echo "$code"
+}
+
+# ── start ───────────────────────────────────────────────────────────────────
+# The plan, printed by --explain and shown to the human before the typed yes.
+start_plan() {
+  cat <<EOF
+hot-bag start would, in order:
+  1. wait for internet over any link (ping $PING_HOST, up to 30s)
+  2. run:  sudo pmset -a disablesleep 1      ← system-wide; the Mac will NOT sleep
+                                               when the lid closes, on battery too,
+                                               until 'hot-bag off' restores it
+  3. write the marker $SLEEP_GUARD (proof hot-bag set it; doctor needs it)
+  4. spawn the sudo-free watchdog (${INTERVAL}s telemetry → $RUNS_DIR/run-*.csv)
+     and caffeinate -dimsu -w <watchdog>; the lid-close chime watcher (LID_CHIME=$LID_CHIME)
+tier: write-gated (tty) — a typed "yes" on /dev/tty, then sudo's own password prompt.
+      There is no --yes. With no terminal the request is staged for:
+      toolbelt approve hot-bag <code>
+restore: hot-bag off   (ungated, always honored)   recovery: hot-bag doctor
+worst case if nothing restores it: the lid-closed Mac runs in a zipped bag until
+      the battery is flat; the watchdog's exit trap tries 'sudo -n pmset -a disablesleep 0'
+      and audits the outcome to $AUDIT_LOG
+EOF
+}
+
+start() {
+  local explain=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --explain|--dry-run) explain=1 ;;
+      --yes|-y|--force)
+        err "start takes no $1 — the gate is a typed \"yes\" on /dev/tty (or 'toolbelt approve hot-bag <code>' from a staged request)."
+        err "A flag an agent could have supplied is not evidence a human meant to hold this Mac awake."
+        exit 2 ;;
+      *) err "Unknown option: $1"; err "usage: hot-bag start [--explain]"; exit 2 ;;
+    esac
+    shift
+  done
+  if [ "$explain" = 1 ]; then start_plan; return 0; fi
+
+  # ── the human gate ──
+  # Already confirmed in-process by `approve` (typed yes on /dev/tty there)?
+  # Otherwise a human must type yes at the controlling terminal now. No
+  # terminal → stage and tell; never proceed on stdin, an env var, or a flag.
+  if [ "$_HB_APPROVED" != 1 ]; then
+    if ! tty_has; then
+      local code; code="$(stage_start)"
+      err "start needs a human at /dev/tty to type \"yes\" (no controlling terminal here); nothing was changed."
+      err "staged — confirm with:  toolbelt approve hot-bag $code"
+      err "(the staged request lives in $PENDING_DIR/$code for $((PENDING_TTL_S / 60)) minutes; it runs only after a human types \"yes\" at a real terminal)"
+      echo "{\"ok\":false,\"error\":\"pending_confirmation\",\"code\":\"$code\",\"approve\":\"toolbelt approve hot-bag $code\"}"
+      exit 2
+    fi
+    start_plan >&2
+    local ans
+    ans="$(tty_read $'\nType "yes" to hold this Mac awake with the lid closed (anything else: nothing changes): ')" || ans=""
+    tty_yes "$ans" || { err "Not starting. Nothing was changed."; exit 1; }
+  fi
+
+  acquire_lock
+  # If we abort after flipping disablesleep=1 but before successful handoff,
+  # restore normal sleep so the user's Mac isn't stranded awake on lid close.
+  local need_cleanup=0
+  trap '
+    if [ "$need_cleanup" = 1 ]; then
+      warn "start aborted — restoring normal sleep"
+      pmset_disablesleep 0 >/dev/null 2>&1 || err "Could not restore sleep. Run: hot-bag off  (or: sudo pmset -a disablesleep 0)"
+      rm -f "$SLEEP_GUARD"
+    fi
+    release_lock
+  ' INT TERM HUP EXIT
+
+  if [ -f "$PIDFILE_WATCH" ] && kill -0 "$(cat "$PIDFILE_WATCH")" 2>/dev/null \
+     && safe_ps_match "$(cat "$PIDFILE_WATCH")" "hot-bag _watch"; then
+    err "Already hot bagging (watchdog pid $(cat "$PIDFILE_WATCH")). Run 'hot-bag stop' first."
+    exit 1
+  fi
+
+  log "Checking for internet over any link (USB tether / Wi-Fi / Ethernet)…"
+  local dev tries=0
+  while ! net_up && [ $tries -lt 15 ]; do sleep 2; tries=$((tries+1)); done
+  if ! net_up; then
+    err "No internet reachable."
+    err "Turn the tether ON: plug the phone in + enable Personal Hotspot / USB tethering,"
+    err "or join the phone's Wi-Fi hotspot, then rerun 'hot-bag start'."
+    exit 1
+  fi
+  dev="$(read_net_iface)"
+  ok "Online via $(iface_label "$dev")"
+  warn "macOS routes through whatever link is up; if you have USB tether AND Wi-Fi,"
+  warn "it fails over between them on its own. We just log which one is live."
+
+  local cpu gpu batt psrc
+  cpu="$(read_cpu_c)"; gpu="$(read_gpu_c)"; batt="$(read_batt_pct)"; psrc="$(read_power_src)"
+  ok "Baseline — CPU ${cpu}°C  GPU ${gpu}°C  •  battery ${batt}% on ${psrc}"
+
+  if ! command -v smctemp >/dev/null 2>&1; then
+    warn "smctemp is not installed — temperatures will log as NA and the thermal state will read UNKNOWN."
+    warn "For real °C, stop and install it first:  brew tap narugit/tap && brew install smctemp"
+  fi
+
+  # Make sure we can actually use sudo before we call it, so a standard user
+  # gets a helpful prompt instead of sudo's "incident will be reported".
+  if ! ensure_admin "sudo pmset disablesleep (hold the Mac awake)"; then
+    exit 1   # trap restores nothing (need_cleanup still 0) and releases the lock
+  fi
+
+  log "Disabling clamshell (lid-closed) sleep — needs sudo…"
+  pmset_disablesleep 1
+  : > "$SLEEP_GUARD"
+  need_cleanup=1
+  ok "Clamshell sleep disabled — the lid can be closed without sleeping (works on battery too)"
+
+  # launch the watchdog detached; it inherits our config via env
+  local logf="$RUNS_DIR/run-$(date '+%Y%m%d-%H%M%S').csv"
+  echo "$logf" > "$CURRENT_RUN"
+  INTERVAL="$INTERVAL" WARN_C="$WARN_C" HOT_C="$HOT_C" CRIT_C="$CRIT_C" \
+  PING_HOST="$PING_HOST" WIFI_SSID="$WIFI_SSID" WIFI_PASSWORD="$WIFI_PASSWORD" \
+  LOW_BATT_ACTION="$LOW_BATT_ACTION" LOW_BATT_PCT="$LOW_BATT_PCT" \
+    nohup "$0" _watch "$logf" >/dev/null 2>&1 &
+  local wpid=$!
+  echo "$wpid" > "$PIDFILE_WATCH"
+
+  # belt-and-suspenders idle-sleep block, lifecycled to the watchdog so a
+  # second start can't orphan it: -w makes caffeinate exit when wpid dies.
+  caffeinate -dimsu -w "$wpid" & echo $! > "$PIDFILE_CAFF"
+  ok "caffeinate holding (pid $(cat "$PIDFILE_CAFF"))"
+  ok "Watchdog logging every ${INTERVAL}s → $logf"
+
+  # Lid-close chime: pre-generate the sound now (so a slow first-play doesn't
+  # eat the transition) and launch the sudo-free lid watcher, detached and
+  # lifecycled to the watchdog. Opt out with LID_CHIME=off.
+  if [ "$LID_CHIME" != off ]; then
+    if command -v afplay >/dev/null 2>&1; then
+      [ -n "$LID_CHIME_FILE" ] || generate_chime "$CHIME_WAV" >/dev/null 2>&1 || true
+      LID_CHIME="$LID_CHIME" LID_CHIME_FILE="$LID_CHIME_FILE" LID_CHIME_VOLUME="$LID_CHIME_VOLUME" \
+        nohup "$0" _lidwatch >/dev/null 2>&1 &
+      echo $! > "$PIDFILE_LID"
+      ok "Lid-close chime armed — you'll hear an 8-bit tone when you shut the lid (LID_CHIME=off to silence)"
+    else
+      warn "afplay not found — lid-close chime disabled for this run."
+    fi
+  fi
+
+  echo
+  ok "Ready — close the lid and pack it. Happy hot bagging. 🎒🔥"
+  warn "THERMAL: lid closed in a zipped bag = no airflow. Leave the bag open and don't"
+  warn "         bury the laptop. Watch for HOT/CRITICAL in the report."
+  warn "POWER:   on battery it still runs but drains fast; keep the power bank plugged in."
+  echo
+  log "When the job's done:  hot-bag stop"
+
+  # success — disarm the abort trap; the override should persist until stop.
+  need_cleanup=0
+  trap - INT TERM HUP EXIT
+  release_lock
+}
+
+# ── caffeinate diagnosis ──────────────────────────────────────────────────────
+# After stop has released its OWN caffeinate, look for any OTHER caffeinate
+# processes still holding sleep open and explain them. Report-only by design:
+# per CLAUDE.md we never do a bare `pkill caffeinate` (it would whack the user's
+# unrelated sessions — terminals, Claude, scripts). Foreign processes are only
+# killed when the caller explicitly passed --kill-stray-caffeinate.
+#   args: <our_caff_pid_to_exclude> <kill_flag 0|1>
+diagnose_caffeinate() {
+  local ours="${1:-}" do_kill="${2:-0}"
+  local pids p cmd found=0
+  pids="$(pgrep -x caffeinate 2>/dev/null || true)"
+  for p in $pids; do
+    [ "$p" = "$ours" ] && continue            # the one stop just released
+    cmd="$(ps -o command= -p "$p" 2>/dev/null || true)"
+    [ -z "$cmd" ] && continue                 # exited between pgrep and now
+    found=$((found+1))
+    # Classify the assertion strength from the flags. -d holds the DISPLAY (and
+    # system) awake; without it caffeinate blocks only IDLE system sleep, which
+    # does NOT keep the lid-closed machine awake — that's `disablesleep`, which
+    # is hot-bag's job and which stop has already restored.
+    local kind note=""
+    case " $cmd " in
+      *" -"*d*w*) kind="hot-bag-style (display+system, tied to a pid) — possible stray from an earlier run" ;;
+      *" -"*d*)   kind="display + system sleep" ;;
+      *)          kind="idle system sleep only — does NOT block lid-close" ;;
+    esac
+    case " $cmd " in
+      *" -t "*) note="  (has -t timeout — auto-expires on its own)" ;;
+    esac
+    [ "$found" = 1 ] && warn "caffeinate check : other caffeinate process(es) still holding sleep open (NOT hot-bag's):"
+    printf '    pid %-6s %s\n' "$p" "$cmd"
+    printf '            → %s%s\n' "$kind" "$note"
+    if [ "$do_kill" = 1 ]; then
+      kill "$p" 2>/dev/null && ok "      killed pid $p (you passed --kill-stray-caffeinate)" \
+                            || err "      could not kill pid $p"
+    fi
+  done
+  if [ "$found" = 0 ]; then
+    ok "caffeinate check : no other caffeinate processes — clean."
+  elif [ "$do_kill" != 1 ]; then
+    warn "  → hot-bag left these alone. Idle-only ones don't affect lid-close sleep, and"
+    warn "    -t ones expire by themselves. To sweep them now: hot-bag stop --kill-stray-caffeinate"
+  fi
+}
+
+# ── stop ────────────────────────────────────────────────────────────────────
+stop() {
+  # Parse flags before taking the lock so a usage error can't strand it held.
+  local kill_stray=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --kill-stray-caffeinate) kill_stray=1 ;;
+      *) err "Unknown option: $1"; err "usage: hot-bag stop [--kill-stray-caffeinate]"; exit 2 ;;
+    esac
+    shift
+  done
+  acquire_lock
+  trap 'release_lock' EXIT
+  local restored=0
+  log "Restoring normal sleep behavior — needs sudo…"
+  # Do NOT let a sudo failure abort us here — leaving disablesleep=1 is the
+  # worst possible outcome. Try, surface the error loudly, keep cleaning up.
+  # Preflight admin first so a standard user gets a useful prompt rather than
+  # sudo's "incident reported" — but if elevation fails we STILL fall through to
+  # kill the watchdog/caffeinate (no sudo needed) and exit non-zero below.
+  if ensure_admin "sudo pmset disablesleep 0 (re-enable lid-close sleep)" \
+     && pmset_disablesleep 0; then
+    restored=1
+    rm -f "$SLEEP_GUARD"
+    ok "Clamshell sleep re-enabled"
+  else
+    err "Failed to restore sleep. Your Mac may stay awake when the lid closes."
+    err "Once you have admin, run this yourself:  sudo pmset -a disablesleep 0"
+    err "  (or: hot-bag doctor — it will restore sleep when you are elevated)"
+  fi
+
+  if [ -f "$PIDFILE_WATCH" ]; then
+    local p; p="$(cat "$PIDFILE_WATCH")"
+    if [ -n "$p" ] && safe_ps_match "$p" "hot-bag _watch"; then
+      kill "$p" 2>/dev/null && ok "Watchdog stopped (pid $p)" || true
+    fi
+    rm -f "$PIDFILE_WATCH"
+  fi
+  local our_caff=""
+  if [ -f "$PIDFILE_CAFF" ]; then
+    our_caff="$(cat "$PIDFILE_CAFF")"
+    if [ -n "$our_caff" ] && safe_ps_match "$our_caff" "caffeinate"; then
+      kill "$our_caff" 2>/dev/null && ok "caffeinate released (pid $our_caff)" || true
+    fi
+    rm -f "$PIDFILE_CAFF"
+  fi
+  if [ -f "$PIDFILE_LID" ]; then
+    local lp; lp="$(cat "$PIDFILE_LID")"
+    if [ -n "$lp" ] && safe_ps_match "$lp" "hot-bag _lidwatch"; then
+      kill "$lp" 2>/dev/null && ok "Lid-close chime stopped (pid $lp)" || true
+    fi
+    rm -f "$PIDFILE_LID"
+  fi
+  # Safety net: an earlier double-start could have orphaned another _watch loop
+  # before we adopted caffeinate -w. Sweep any strays owned by this script.
+  pkill -f "$0 _watch" 2>/dev/null || true
+  pkill -f "$0 _lidwatch" 2>/dev/null || true
+
+  # Account for any caffeinate still holding sleep open — report-only unless
+  # --kill-stray-caffeinate was passed. Excludes the one we just released (it
+  # may not have fully exited yet).
+  diagnose_caffeinate "$our_caff" "$kill_stray"
+
+  echo
+  report || true
+  [ "$restored" = 1 ] || exit 1
+}
+
+# ── report ──────────────────────────────────────────────────────────────────
+report() {
+  local logf="${1:-}"
+  if [ -z "$logf" ]; then
+    logf="$( [ -f "$CURRENT_RUN" ] && cat "$CURRENT_RUN" || true )"
+    [ -z "$logf" ] || [ ! -f "$logf" ] && logf="$(ls -t "$RUNS_DIR"/run-*.csv 2>/dev/null | head -1 || true)"
+  fi
+  if [ -z "$logf" ] || [ ! -f "$logf" ]; then
+    err "No run log found in $RUNS_DIR"; return 1
+  fi
+
+  printf '\033[1m── Hot bag report ─────────────────────────────────────\033[0m\n'
+  printf 'log: %s\n\n' "$logf"
+  awk -F, '
+  function human(b,  u,nn,i){ nn=split("B KB MB GB TB",u," "); i=1; while(b>=1024 && i<nn){b/=1024;i++} return sprintf("%.1f %s", b, u[i]) }
+  NR>1{
+    n++;
+    if($1<mine||!mine)mine=$1; if($1>maxe)maxe=$1;
+    if($3!="NA"){c++; cs+=$3; if($3+0>cmax)cmax=$3+0; if(cmin==""||$3+0<cmin)cmin=$3+0}
+    if($4!="NA"){g++; gs+=$4; if($4+0>gmax)gmax=$4+0; if(gmin==""||$4+0<gmin)gmin=$4+0}
+    if($6+0<slmin||slmin=="")slmin=$6+0;
+    if(bstart=="")bstart=$7; bend=$7; psrc=$8;
+    if($5=="WARM")warm++; if($5=="HOT")hot++; if($5=="CRITICAL")crit++;
+    if($6+0<100)thr++;            # speed-limit is the authoritative throttle signal
+    if($10=="down")down++;
+    # per-interface cumulative byte counters → delta = data used on that link
+    if($11+0>0){ if(!($9 in rxlo)||$11+0<rxlo[$9])rxlo[$9]=$11+0; if($11+0>rxhi[$9])rxhi[$9]=$11+0 }
+    if($12+0>0){ if(!($9 in txlo)||$12+0<txlo[$9])txlo[$9]=$12+0; if($12+0>txhi[$9])txhi[$9]=$12+0 }
+  }
+  END{
+    dur=maxe-mine; h=int(dur/3600); m=int((dur%3600)/60); s=dur%60;
+    printf "samples      : %d over %dh%02dm%02ds\n", n, h, m, s;
+    if(c) printf "CPU temp     : avg %.1f°C  min %.1f°C  max %.1f°C\n", cs/c, cmin, cmax;
+    else  printf "CPU temp     : (no valid readings)\n";
+    if(g) printf "GPU temp     : avg %.1f°C  min %.1f°C  max %.1f°C\n", gs/g, gmin, gmax;
+    printf "thermal      : %d WARM, %d HOT, %d CRITICAL, %d throttled\n", warm+0, hot+0, crit+0, thr+0;
+    printf "min CPU speed: %d%% %s\n", slmin, (slmin<100?"(throttling occurred)":"(never throttled)");
+    printf "battery      : %s%% → %s%% (last source: %s)\n", bstart, bend, psrc;
+    printf "connectivity : %d of %d samples DOWN (%.0f%% uptime)\n", down+0, n, (n? (n-down)*100/n : 0);
+    for(i in rxhi) totrx+=rxhi[i]-rxlo[i];
+    for(i in txhi) tottx+=txhi[i]-txlo[i];
+    printf "tether data  : ↓ %s  ↑ %s  (total %s, all traffic over the link)\n", human(totrx), human(tottx), human(totrx+tottx);
+
+    # ── verdict ──────────────────────────────────────────────────────────
+    # Pick a band from the hottest sensor; remember Apple silicon is designed
+    # to throttle (not damage) up around 100°C. These bands are tighter than
+    # "desk normal" on purpose — in a bag, airflow is the real constraint.
+    mt = (cmax+0 > gmax+0) ? cmax+0 : gmax+0;
+    bdrop = (bstart+0) - (bend+0);
+    has_temp = (c+0 > 0 || g+0 > 0);
+
+    printf "\n\033[1mverdict\033[0m\n";
+
+    if (!has_temp) {
+      printf "  \033[1;33m?\033[0m No °C readings (install smctemp for real temps: brew tap narugit/tap && brew install smctemp).\n";
+    } else if (mt < 60) {
+      printf "  \033[1;32m✓\033[0m Stayed cool (peak %.0f°C) — basically idle thermals. The bag handled this with no trouble.\n", mt;
+    } else if (mt < 80) {
+      printf "  \033[1;32m✓\033[0m Moderate heat (peak %.0f°C) — normal sustained-work range. Plenty of headroom.\n", mt;
+    } else if (mt < 90) {
+      printf "  \033[1;33m!\033[0m Ran warm (peak %.0f°C) — heavy-load range. On a desk this is fine; in a bag you used most of your airflow margin.\n", mt;
+    } else if (mt < 95) {
+      printf "  \033[1;33m!\033[0m Ran hot (peak %.0f°C) — approaching where Apple silicon starts pulling back clocks. Airflow was tight.\n", mt;
+    } else {
+      printf "  \033[1;31m✗\033[0m Critical heat (peak %.0f°C) — right at the throttle/shutdown zone. The chip is protected by design, but you were close to an emergency shutdown.\n", mt;
+    }
+
+    # Throttling — speed-limit is the authoritative signal (not the WARM/HOT tally).
+    if (slmin+0 < 100) {
+      printf "  \033[1;33m!\033[0m CPU clock dropped to %d%% — the OS throttled to manage heat/power. CPU-bound work ran proportionally slower during that window.\n", slmin;
+    } else if (has_temp && mt >= 80) {
+      printf "  \033[1;32m✓\033[0m CPU never throttled — your job ran at full clock the whole time despite the warmth.\n";
+    }
+
+    # Connectivity — only worth mentioning if it was actually flaky.
+    if (n > 0 && down+0 > n*0.1) {
+      printf "  \033[1;33m!\033[0m Network was flaky (%.0f%% uptime) — long-running calls may have stalled or retried.\n", (n-down)*100/n;
+    }
+
+    # Battery — only flag if the drain was substantial.
+    if (bdrop >= 30) {
+      printf "  \033[1;33m!\033[0m Battery dropped %d points (%d%% → %d%%) — keep the USB-C power bank plugged in for runs this long.\n", bdrop, bstart, bend;
+    } else if (psrc == "Battery Power" && bdrop >= 10) {
+      printf "  \033[1;32m✓\033[0m Battery handled it (%d%% → %d%%, -%d).\n", bstart, bend, bdrop;
+    }
+
+    # Bottom-line actionable suggestion for next run.
+    if (!has_temp) {
+      # no advice without temps
+    } else if (mt >= 95) {
+      printf "  \033[1;31m→\033[0m Next time: do not zip the bag, leave the laptop part-way out, or just run it at your desk. This was too hot.\n";
+    } else if (mt >= 90 || slmin+0 < 90) {
+      printf "  \033[1;33m→\033[0m Next time: unzip the bag fully, leave a vent edge sticking out, or shorten the run. You were near the limit.\n";
+    } else if (mt >= 80) {
+      printf "  →   Bag held up, but do not pack it tighter than this. Crack the zipper open if you want more margin.\n";
+    } else {
+      printf "  \033[1;32m→\033[0m Comfortable for this workload — you had margin to spare. Keep an air gap regardless.\n";
+    }
+  }' "$logf"
+}
+
+# ── status ──────────────────────────────────────────────────────────────────
+status() {
+  local cpu gpu sl batt psrc dev nstat state
+  cpu="$(read_cpu_c)"; gpu="$(read_gpu_c)"; sl="$(read_speed_limit)"
+  batt="$(read_batt_pct)"; psrc="$(read_power_src)"; dev="$(read_net_iface)"
+  if net_up; then nstat="up"; else nstat="down"; fi
+  state="$(thermal_state "$cpu" "$gpu" "$sl")"
+  local ds; ds="$(pmset -g 2>/dev/null | awk '/SleepDisabled/{print $2}')"
+  printf 'lid-closed-awake : %s\n' "$([ "${ds:-0}" = 1 ] && echo 'ON (hot bagging)' || echo off)"
+  if [ "${ds:-0}" = 1 ] && { [ ! -f "$PIDFILE_WATCH" ] || ! kill -0 "$(cat "$PIDFILE_WATCH" 2>/dev/null)" 2>/dev/null; }; then
+    warn "Sleep override is ON but no watchdog is running — wedged state."
+    warn "Fix it with:  hot-bag doctor   (or manually: sudo pmset -a disablesleep 0)"
+  fi
+  printf 'temperature      : CPU %s°C  GPU %s°C  → %s\n' "$cpu" "$gpu" "$state"
+  printf 'cpu speed limit  : %s%%\n' "$sl"
+  printf 'power            : %s%% on %s\n' "${batt:-?}" "${psrc:-?}"
+  printf 'network          : %s (%s)\n' "$(iface_label "$dev")" "$nstat"
+  if [ -f "$PIDFILE_WATCH" ] && kill -0 "$(cat "$PIDFILE_WATCH")" 2>/dev/null; then
+    local csv=""
+    [ -f "$CURRENT_RUN" ] && csv="$(cat "$CURRENT_RUN" 2>/dev/null || true)"
+    if [ -n "$csv" ] && [ -f "$csv" ]; then
+      local rxtx rx tx tot trx ttx
+      rxtx="$(read_iface_bytes "$dev")"; rx="${rxtx% *}"; tx="${rxtx#* }"
+      tot="$(run_data_used "$csv" "$dev" "$rx" "$tx")"; trx="${tot% *}"; ttx="${tot#* }"
+      printf 'data this run    : ↓ %s  ↑ %s  (total %s)\n' "$(human_bytes "$trx")" "$(human_bytes "$ttx")" "$(human_bytes "$((trx+ttx))")"
+    fi
+    printf 'watchdog         : running (pid %s) → %s\n' "$(cat "$PIDFILE_WATCH")" "$csv"
+    local lchime='off'
+    if [ "$LID_CHIME" != off ] && [ -f "$PIDFILE_LID" ] \
+       && safe_ps_match "$(cat "$PIDFILE_LID" 2>/dev/null)" "hot-bag _lidwatch"; then
+      lchime="armed (chimes on lid close)"
+    elif [ "$LID_CHIME" = off ]; then
+      lchime='off (LID_CHIME=off)'
+    else
+      lchime='not running'
+    fi
+    printf 'lid chime        : %s\n' "$lchime"
+  else
+    printf 'watchdog         : not running\n'
+  fi
+}
+
+# ── doctor ──────────────────────────────────────────────────────────────────
+# Detect-and-repair a wedged state (e.g. after a crash or forced reboot): if
+# the sleep override is stuck on or stale processes / state files are lying
+# around, put things back to normal. Safe to run any time.
+doctor() {
+  local ds; ds="$(pmset -g 2>/dev/null | awk '/SleepDisabled/{print $2}')"
+  if [ "${ds:-0}" = 1 ]; then
+    if [ -f "$SLEEP_GUARD" ]; then
+      log "Sleep override is ON and was set by hot-bag — restoring…"
+      if ensure_admin "sudo pmset disablesleep 0 (re-enable lid-close sleep)" \
+         && pmset_disablesleep 0; then
+        ok "Restored sleep"
+        rm -f "$SLEEP_GUARD"
+      else
+        err "Failed to restore. Once you have admin, run:  sudo pmset -a disablesleep 0"
+      fi
+    else
+      warn "Sleep override is ON but no hot-bag guard marker — looks externally set."
+      warn "Refusing to clear it automatically. If you're sure you want to:"
+      warn "  sudo pmset -a disablesleep 0"
+    fi
+  else
+    ok "Sleep override is OFF"
+  fi
+  # Only kill processes we can verify are ours — never a bare `pkill caffeinate`
+  # (would whack the user's unrelated caffeinate sessions).
+  pkill -f "$0 _watch" 2>/dev/null || true
+  pkill -f "$0 _lidwatch" 2>/dev/null || true
+  if [ -f "$PIDFILE_CAFF" ]; then
+    local p; p="$(cat "$PIDFILE_CAFF" 2>/dev/null || true)"
+    if [ -n "$p" ] && safe_ps_match "$p" "caffeinate"; then
+      kill "$p" 2>/dev/null || true
+    fi
+  fi
+  rm -f "$PIDFILE_WATCH" "$PIDFILE_CAFF" "$PIDFILE_LID" "$CURRENT_RUN" 2>/dev/null || true
+  rmdir "$LOCKDIR" 2>/dev/null || true
+  ok "Cleaned up stale state"
+}
+
+# ── _indicator-state (internal) ───────────────────────────────────────────────
+# Single source of truth for the menu-bar indicator. Cheap and side-effect-free
+# (NO network ping, no sudo) so it can be polled every few seconds. Prints one
+# token on the first line; the indicator maps it to an icon:
+#   on      watchdog alive AND sleep override on  → actively hot bagging  🔥
+#   wedged  sleep override on but no live watchdog → needs `doctor`       ⚠️
+#   off     sleep override off                     → hidden
+# Mirrors the on/wedged logic in `status` so the glanceable signal never
+# disagrees with the command.
+indicator_state() {
+  local ds; ds="$(pmset -g 2>/dev/null | awk '/SleepDisabled/{print $2}')"
+  if [ "${ds:-0}" = 1 ]; then
+    if watchdog_alive; then echo on; else echo wedged; fi
+  else
+    echo off
+  fi
+}
+
+# ── approve (the human's confirm of a staged start) ──────────────────────────
+# What `toolbelt approve hot-bag <code>` runs. Opens /dev/tty — never stdin —
+# shows the plan, takes a typed yes, deletes the record (single use, whether or
+# not the start then succeeds) and runs `start` in-process with _HB_APPROVED=1.
+# No terminal → refuse and keep the record; never re-stage, never auto-approve.
+approve() {
+  prune_pending
+  case "${1:-}" in
+    --list)
+      if ! ls "$PENDING_DIR"/* >/dev/null 2>&1; then echo "No staged starts pending under $PENDING_DIR."; return 0; fi
+      local f; for f in "$PENDING_DIR"/*; do
+        printf '%s  staged %s\n' "$(basename "$f")" "$(awk -F= '/^staged_iso=/{print $2}' "$f")"
+      done; return 0 ;;
+    --discard)
+      local c="${2:-}"; [ -n "$c" ] || { err "usage: hot-bag approve --discard <code>"; exit 2; }
+      rm -f "$PENDING_DIR/$c" && ok "Discarded staged start $c"; audit "approve" "discard=$c" "discarded"; return 0 ;;
+    '') err "usage: hot-bag approve <code> | --list | --discard <code>"; exit 2 ;;
+  esac
+  local code="$1" f="$PENDING_DIR/$1"
+  case "$code" in *[!a-z0-9]*|'') err "Bad code: $code"; exit 2 ;; esac
+  if [ ! -f "$f" ]; then
+    err "No staged start \"$code\" (staged requests live $((PENDING_TTL_S / 60)) minutes; it may have expired). Ask the agent to run 'hot-bag start' again."
+    exit 1
+  fi
+  if ! tty_has; then
+    err "approve needs /dev/tty to take a typed \"yes\" (no controlling terminal here). Record kept."
+    err "Run 'toolbelt approve hot-bag $code' in a real terminal, or start it yourself there: hot-bag start"
+    exit 1
+  fi
+  printf '\nStaged start %s — staged %s\n\n' "$code" "$(awk -F= '/^staged_iso=/{print $2}' "$f")" >&2
+  start_plan >&2
+  local ans
+  ans="$(tty_read $'\nType "yes" to start now; anything else keeps it staged (discard with: hot-bag approve --discard '"$code"$'): ')" || ans=""
+  tty_yes "$ans" || { err "Not approved. Record kept ($f)."; audit "approve" "code=$code" "declined"; exit 1; }
+  rm -f "$f"
+  audit "approve" "code=$code" "approved"
+  _HB_APPROVED=1
+  start
+}
+
+usage() {
+  cat >&2 <<EOF
+usage: hot-bag <verb>
+  read      status | report [logfile] | chime | start --explain | approve --list
+  on        start | on                  gated: typed "yes" on /dev/tty + sudo; no --yes;
+                                        headless → staged for 'toolbelt approve hot-bag <code>'
+  off       stop | off [--kill-stray-caffeinate]   restore sleep — ungated, always honored
+  recover   doctor                      restore sleep if hot-bag set it; clean stale state
+  approve   approve <code> | --list | --discard <code>
+EOF
+  exit 2
+}
+
+case "${1:-}" in
+  start|on)  shift; start "$@" ;;
+  stop|off)  shift; stop "$@" ;;
+  status) status ;;
+  report) report "${2:-}" ;;
+  doctor) doctor ;;
+  chime)  chime_preview ;;
+  approve) shift; approve "$@" ;;
+  _watch) _watch "${2:?usage: _watch <logfile>}" ;;
+  _lidwatch) _lidwatch ;;
+  _indicator-state) indicator_state ;;
+  -h|--help|help) usage ;;
+  *) usage ;;
+esac

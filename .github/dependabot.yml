@@ -1,0 +1,23 @@
+# Every directory carrying a lockfile is listed here; tools/repo-integrity fails on any that is not.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    schedule: { interval: "monthly" }
+    directories:
+      - /tools/example-readonly
+      - /tools/example-write
+      - /tools/openai-image
+      - /tools/oracle
+      - /tools/perplexity
+      - /tools/playwright
+      - /tools/runway-ai
+      - /tools/slack
+      - /tools/youtube-transcript
+  - package-ecosystem: "pip"
+    schedule: { interval: "monthly" }
+    directories:
+      - /tools/elevenlabs
+      - /tools/nordvpn
+      - /tools/spiral-book
+      - /tools/transcription
+      - /tools/video-rename

@@ -1,0 +1,311 @@
+#!/bin/bash
+# codex-fleet — fan out cheap parallel Codex workers (default: gpt-5.6-luna) for
+# test/verification fleets, orchestrated from Claude Code or any shell.
+#
+# Usage:
+#   codex-fleet [options] "prompt"          run one prompt (use -n N for replicas)
+#   codex-fleet [options] -f jobs.txt       one job per line (# lines ignored)
+#
+# Options:
+#   -n N        replicas of the prompt (flake-hunting, repeated verification)
+#   -f FILE     jobs file, one single-line prompt per line
+#   -m MODEL    model (default gpt-5.6-luna)
+#   -e EFFORT   reasoning effort: none|low|medium|high|xhigh|max (default medium)
+#   -s SANDBOX  read-only|workspace-write|danger-full-access (default read-only)
+#   -j JOBS     max concurrent workers (default 8, ceiling 16)
+#   -C DIR      working root for the agents (default: current directory)
+#   -t SECS     per-job timeout (default 900)
+#   -o DIR      results dir (default .fleet/run-<n>)
+#   -w          worktree isolation: each job runs in its own git worktree of -C DIR
+#               (the dirty diff of tracked files is applied; untracked files are not copied)
+#   --net       allow network inside the workspace-write sandbox
+#   --api       bill to OPENAI_API_KEY (metered) instead of ChatGPT plan
+#   --raw       skip the structured verdict schema (free-form final message)
+#   --schema F  use a custom JSON schema for the final message
+#   --explain   pre-flight: print the plan and the exact codex argv, launch nothing
+#   --yes       the human's acknowledgement for a widened fleet (see below)
+#
+# Gates (SENSIBILITIES #2, flag tier). The default fleet is read-only: workers may not
+# write anywhere, not even /tmp. Anything that widens that — -w, -s workspace-write,
+# -s danger-full-access, --net — PREVIEWS without --yes (exit 0, nothing launched) and
+# runs only with an explicit --yes. --api is its own loud flag: metered billing on the
+# operator's key. Ceilings (MAX_JOBS, MAX_CONCURRENCY) are code constants; a fleet over
+# one is refused, not trimmed.
+#
+# Each worker runs `codex exec` with --ephemeral (no session-file writes).
+# Results land in the results dir:
+#   job-N.prompt  the prompt          job-N.out   final message (JSON verdict unless --raw)
+#   job-N.jsonl   event stream        job-N.log   progress/stderr
+#   job-N.exit    exit code           summary.json / summary.md  fleet rollup
+#
+# A job passes only when all signals agree: exit code 0, a turn.completed event
+# in its stream, and (in schema mode) verdict status "pass". Exit code 0 alone
+# is necessary but not sufficient (codex can exit 0 without doing the task).
+#
+# Exit codes: 0 fleet passed, or previewed/explained · 1 a job failed, or a dependency
+# is missing · 2 usage (bad flag, over a ceiling, -w outside a git repo).
+
+set -u
+
+VERSION="1.1.0"
+# ---- ceilings: code constants, not flags (SENSIBILITIES #3). Raising one is a diff.
+MAX_JOBS=50          # jobs per fleet; a jobs file or -n above this is refused
+MAX_CONCURRENCY=16   # -j ceiling; the worker pool never exceeds it
+
+MODEL="gpt-5.6-luna"; EFFORT="medium"; SANDBOX="read-only"; JOBS=8
+WORKROOT="$PWD"; TIMEOUT=900; OUTDIR=""; REPLICAS=1; JOBSFILE=""; PROMPT=""
+USE_API=0; RAW=0; SCHEMA=""; WORKTREES=0; NET=0; YES=0; EXPLAIN=0
+SELF="$(readlink -f "$0")"; FLEET_HOME="$(cd "$(dirname "$SELF")/.." && pwd)"
+AUDIT_LOG="${CODEX_FLEET_AUDIT:-$FLEET_HOME/data/audit.log}"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -n) REPLICAS="$2"; shift 2;;
+    -f) JOBSFILE="$2"; shift 2;;
+    -m) MODEL="$2"; shift 2;;
+    -e) EFFORT="$2"; shift 2;;
+    -s) SANDBOX="$2"; shift 2;;
+    -j) JOBS="$2"; shift 2;;
+    -C) WORKROOT="$(cd "$2" && pwd)" || { echo "codex-fleet: -C $2: no such directory" >&2; exit 2; }; shift 2;;
+    -t) TIMEOUT="$2"; shift 2;;
+    -o) OUTDIR="$2"; shift 2;;
+    -w) WORKTREES=1; shift;;
+    --net) NET=1; shift;;
+    --api) USE_API=1; shift;;
+    --raw) RAW=1; shift;;
+    --schema) SCHEMA="$2"; shift 2;;
+    --explain|--dry-run) EXPLAIN=1; shift;;
+    --yes) YES=1; shift;;
+    --version) echo "codex-fleet $VERSION"; exit 0;;
+    -h|--help) sed -n '2,47p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
+    -*) echo "codex-fleet: unknown option '$1' (see --help)" >&2; exit 2;;
+    *) PROMPT="$1"; shift;;
+  esac
+done
+
+case "$EFFORT" in none|low|medium|high|xhigh|max) ;; *)
+  echo "codex-fleet: invalid effort '$EFFORT' (none|low|medium|high|xhigh|max)" >&2; exit 2;; esac
+case "$SANDBOX" in read-only|workspace-write|danger-full-access) ;; *)
+  echo "codex-fleet: invalid sandbox '$SANDBOX' (read-only|workspace-write|danger-full-access)" >&2; exit 2;; esac
+case "$REPLICAS$JOBS$TIMEOUT" in *[!0-9]*)
+  echo "codex-fleet: -n, -j and -t take positive integers" >&2; exit 2;; esac
+
+if [ -z "$PROMPT" ] && [ -z "$JOBSFILE" ]; then
+  echo "codex-fleet: need a prompt or -f jobs.txt (see --help)" >&2; exit 2
+fi
+if [ -n "$JOBSFILE" ] && [ ! -r "$JOBSFILE" ]; then
+  echo "codex-fleet: jobs file '$JOBSFILE' not readable" >&2; exit 2
+fi
+
+# --- count jobs before anything is created ---------------------------------
+NJOBS=0
+if [ -n "$JOBSFILE" ]; then
+  while IFS= read -r line; do
+    case "$line" in ''|'#'*) continue;; esac
+    NJOBS=$((NJOBS+1))
+  done < "$JOBSFILE"
+else
+  NJOBS=$REPLICAS
+fi
+[ "$NJOBS" -eq 0 ] && { echo "codex-fleet: no jobs" >&2; exit 2; }
+if [ "$NJOBS" -gt "$MAX_JOBS" ]; then
+  echo "codex-fleet: $NJOBS jobs exceeds MAX_JOBS=$MAX_JOBS (a code constant in bin/codex-fleet); split the fleet or edit the ceiling" >&2; exit 2
+fi
+if [ "$JOBS" -gt "$MAX_CONCURRENCY" ] || [ "$JOBS" -lt 1 ]; then
+  echo "codex-fleet: -j $JOBS outside 1..MAX_CONCURRENCY=$MAX_CONCURRENCY (a code constant in bin/codex-fleet)" >&2; exit 2
+fi
+
+[ $RAW -eq 0 ] && [ -z "$SCHEMA" ] && SCHEMA="$FLEET_HOME/share/verdict.schema.json"
+
+# --- classify the fleet: read-only (read tier) or widened (flag tier) --------
+WIDENED=""
+[ $WORKTREES -eq 1 ] && WIDENED="$WIDENED -w(git worktrees under $WORKROOT)"
+[ "$SANDBOX" != "read-only" ] && WIDENED="$WIDENED -s $SANDBOX"
+[ $NET -eq 1 ] && WIDENED="$WIDENED --net(network egress from workers)"
+BILLING=$([ $USE_API -eq 1 ] && echo api || echo plan)
+TIER="read"; [ -n "$WIDENED" ] && TIER="write-gated"
+
+if [ -z "$OUTDIR" ]; then
+  n=1; while [ -e "$WORKROOT/.fleet/run-$n" ]; do n=$((n+1)); done
+  OUTDIR="$WORKROOT/.fleet/run-$n"
+fi
+
+plan() {
+  echo "── codex-fleet plan ─────────────────────────────────────────"
+  echo "jobs:      $NJOBS ($([ -n "$JOBSFILE" ] && echo "from $JOBSFILE" || echo "$REPLICAS replica(s) of one prompt"))"
+  echo "model:     $MODEL / effort $EFFORT"
+  echo "sandbox:   $SANDBOX$([ $NET -eq 1 ] && echo ' + network')$([ $WORKTREES -eq 1 ] && echo ' · per-job git worktrees')"
+  echo "workroot:  $WORKROOT"
+  echo "results:   $OUTDIR"
+  echo "pool:      $JOBS-way · timeout ${TIMEOUT}s per job"
+  echo "billing:   $BILLING$([ $USE_API -eq 1 ] && echo ' (METERED — OPENAI_API_KEY)' || echo ' (ChatGPT plan; OPENAI_API_KEY stripped)')"
+  echo "tier:      $TIER${WIDENED:+ —$WIDENED}"
+  echo "codex argv: codex exec -m $MODEL -c model_reasoning_effort=$EFFORT -s $SANDBOX --ephemeral --skip-git-repo-check --color never --json -C <jobdir> -o <job-N.out>$([ $NET -eq 1 ] && echo ' -c sandbox_workspace_write.network_access=true')${SCHEMA:+ --output-schema $SCHEMA} - < job-N.prompt"
+  echo "─────────────────────────────────────────────────────────────"
+}
+
+if [ $EXPLAIN -eq 1 ]; then
+  plan
+  echo "explain only — nothing launched, nothing written."
+  exit 0
+fi
+
+# --- the flag gate (SENSIBILITIES #2): a widened fleet previews without --yes --
+if [ "$TIER" = "write-gated" ] && [ $YES -eq 0 ]; then
+  plan >&2
+  echo "[codex-fleet] Preview only — nothing launched. This fleet WIDENS the read-only default:$WIDENED" >&2
+  echo "  workers can change files under $WORKROOT$([ $WORKTREES -eq 1 ] && echo ' (in throwaway worktrees; the main tree is untouched)')$([ $NET -eq 1 ] && echo ' and reach the network')." >&2
+  echo "  To run exactly this, a human re-runs the same command with --yes." >&2
+  exit 0
+fi
+
+# --- dependencies: degrade with the fix named, never half-run ---------------
+command -v codex >/dev/null 2>&1 || { echo "codex-fleet: 'codex' not on PATH — brew install codex" >&2; exit 1; }
+command -v jq >/dev/null 2>&1 || { echo "codex-fleet: 'jq' not on PATH (needed for the rollup) — brew install jq" >&2; exit 1; }
+if [ $USE_API -eq 1 ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+  echo "codex-fleet: --api set but OPENAI_API_KEY is empty; drop --api to bill the ChatGPT plan" >&2; exit 1
+fi
+if [ $WORKTREES -eq 1 ] && ! git -C "$WORKROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  echo "codex-fleet: -w needs $WORKROOT to be a git repository" >&2; exit 2
+fi
+
+mkdir -p "$OUTDIR"
+OUTDIR="$(cd "$OUTDIR" && pwd)"
+
+# --- write per-job prompt files -------------------------------------------
+if [ -n "$JOBSFILE" ]; then
+  i=0
+  while IFS= read -r line; do
+    case "$line" in ''|'#'*) continue;; esac
+    i=$((i+1)); printf '%s\n' "$line" > "$OUTDIR/job-$i.prompt"
+  done < "$JOBSFILE"
+else
+  i=1; while [ $i -le "$REPLICAS" ]; do
+    printf '%s\n' "$PROMPT" > "$OUTDIR/job-$i.prompt"; i=$((i+1))
+  done
+fi
+
+# --- audit line (SENSIBILITIES #7): every fleet is spend; every widened fleet is a write --
+audit() {
+  local line
+  line="[codex-fleet audit] $(date -u +%Y-%m-%dT%H:%M:%SZ) verb=run $1 jobs=$NJOBS model=$MODEL effort=$EFFORT sandbox=$SANDBOX worktrees=$WORKTREES net=$NET billing=$BILLING tier=$TIER yes=$YES workroot=\"$WORKROOT\" results=\"$OUTDIR\""
+  echo "$line" >&2
+  { umask 077; mkdir -p "$(dirname "$AUDIT_LOG")" && chmod 700 "$(dirname "$AUDIT_LOG")" && echo "$line" >> "$AUDIT_LOG"; } 2>/dev/null
+}
+audit "phase=start"
+
+echo "codex-fleet: $NJOBS job(s) | $MODEL/$EFFORT | sandbox=$SANDBOX | ${JOBS}-way | billing=$BILLING | $OUTDIR"
+
+# --- helpers ---------------------------------------------------------------
+kill_tree() {
+  # codex's shell-tool timeout is known to orphan child processes; kill the tree
+  local p
+  for p in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$p"; done
+  kill "$1" 2>/dev/null
+}
+
+# --- single-job runner -----------------------------------------------------
+run_job() {
+  idx="$1"
+  jobdir="$WORKROOT"
+  if [ $WORKTREES -eq 1 ]; then
+    jobdir="$OUTDIR/wt-$idx"
+    git -C "$WORKROOT" worktree add --detach -q "$jobdir" >/dev/null 2>&1 || {
+      echo "worktree add failed" > "$OUTDIR/job-$idx.log"; echo 97 > "$OUTDIR/job-$idx.exit"; return; }
+    # a detached worktree is HEAD only; carry over uncommitted tracked changes
+    if ! git -C "$WORKROOT" diff --quiet HEAD 2>/dev/null; then
+      git -C "$WORKROOT" diff HEAD | git -C "$jobdir" apply 2>>"$OUTDIR/job-$idx.log" \
+        || echo "WARNING: could not apply dirty diff to worktree" >> "$OUTDIR/job-$idx.log"
+    fi
+  fi
+  set -- codex exec -m "$MODEL" -c "model_reasoning_effort=$EFFORT" -s "$SANDBOX" \
+      --ephemeral --skip-git-repo-check --color never --json -C "$jobdir" \
+      -o "$OUTDIR/job-$idx.out"
+  [ $NET -eq 1 ] && set -- "$@" -c "sandbox_workspace_write.network_access=true"
+  [ -n "$SCHEMA" ] && set -- "$@" --output-schema "$SCHEMA"
+
+  if [ $USE_API -eq 1 ]; then
+    "$@" - < "$OUTDIR/job-$idx.prompt" > "$OUTDIR/job-$idx.jsonl" 2> "$OUTDIR/job-$idx.log" &
+  else
+    # Plan billing: codex prefers OPENAI_API_KEY when present, which would silently meter.
+    env -u OPENAI_API_KEY "$@" - < "$OUTDIR/job-$idx.prompt" > "$OUTDIR/job-$idx.jsonl" 2> "$OUTDIR/job-$idx.log" &
+  fi
+  pid=$!
+  ( sleep "$TIMEOUT" && kill_tree "$pid" ) & watchdog=$!
+  wait "$pid"; rc=$?
+  kill_tree "$watchdog"; wait "$watchdog" 2>/dev/null   # the tree: the subshell AND its sleep, which would otherwise hold stderr open for TIMEOUT seconds
+  echo "$rc" > "$OUTDIR/job-$idx.exit"
+  if [ $WORKTREES -eq 1 ]; then
+    git -C "$WORKROOT" worktree remove --force "$jobdir" >/dev/null 2>&1
+  fi
+  status=""
+  [ -n "$SCHEMA" ] && status=" $(jq -r '.status // empty' "$OUTDIR/job-$idx.out" 2>/dev/null)"
+  echo "  job $idx done: exit=$rc$status"
+}
+
+# --- fleet loop with a JOBS-wide slot pool (bash 3.2 compatible) -----------
+started=0
+while [ $started -lt $NJOBS ]; do
+  while [ "$(jobs -pr | wc -l)" -ge "$JOBS" ]; do sleep 0.5; done
+  started=$((started+1))
+  run_job "$started" &
+done
+wait
+
+# --- rollup ----------------------------------------------------------------
+job_completed() {  # did the worker's turn actually complete?
+  jq -s 'any(.[]; .type=="turn.completed")' "$OUTDIR/job-$1.jsonl" 2>/dev/null | grep -q true
+}
+
+fails=0
+i=1; while [ $i -le $NJOBS ]; do
+  rc="$(cat "$OUTDIR/job-$i.exit" 2>/dev/null || echo 99)"
+  ok=1
+  [ "$rc" -eq 0 ] || ok=0
+  job_completed "$i" || ok=0
+  if [ -n "$SCHEMA" ]; then
+    jq -e '.status == "pass"' "$OUTDIR/job-$i.out" >/dev/null 2>&1 || ok=0
+  fi
+  [ $ok -eq 1 ] || fails=$((fails+1))
+  i=$((i+1))
+done
+
+{
+  echo '{"jobs":['
+  i=1; while [ $i -le $NJOBS ]; do
+    rc="$(cat "$OUTDIR/job-$i.exit" 2>/dev/null || echo 99)"
+    usage="$(jq -sc '[.[]|select(.type=="turn.completed")][0].usage // null' "$OUTDIR/job-$i.jsonl" 2>/dev/null)"
+    [ -z "$usage" ] && usage=null
+    completed=false; job_completed "$i" && completed=true
+    if [ -n "$SCHEMA" ]; then
+      verdict="$(cat "$OUTDIR/job-$i.out" 2>/dev/null)"
+      [ -z "$verdict" ] && verdict="null"
+    else
+      verdict="$(jq -Rs . < "$OUTDIR/job-$i.out" 2>/dev/null || echo null)"
+    fi
+    comma=","; [ $i -eq $NJOBS ] && comma=""
+    echo "{\"job\":$i,\"exit\":$rc,\"completed\":$completed,\"usage\":$usage,\"verdict\":$verdict}$comma"
+    i=$((i+1))
+  done
+  echo "],\"model\":\"$MODEL\",\"effort\":\"$EFFORT\",\"sandbox\":\"$SANDBOX\",\"worktrees\":$WORKTREES,\"billing\":\"$BILLING\",\"failures\":$fails}"
+} | jq . > "$OUTDIR/summary.json" 2>/dev/null || cp /dev/null "$OUTDIR/summary.json"
+
+{
+  echo "# fleet summary — $NJOBS jobs, $MODEL/$EFFORT, $fails failure(s)"
+  i=1; while [ $i -le $NJOBS ]; do
+    rc="$(cat "$OUTDIR/job-$i.exit" 2>/dev/null || echo 99)"
+    if [ -n "$SCHEMA" ]; then
+      line="$(jq -r '"[\(.status)] \(.summary)"' "$OUTDIR/job-$i.out" 2>/dev/null || echo '[?] no verdict')"
+    else
+      line="$(head -c 200 "$OUTDIR/job-$i.out" 2>/dev/null | tr '\n' ' ')"
+    fi
+    echo "- job $i (exit $rc): $line"
+    i=$((i+1))
+  done
+} > "$OUTDIR/summary.md"
+
+TOKENS="$(jq -r '[.jobs[].usage | select(. != null) | (.input_tokens // 0) + (.output_tokens // 0)] | add // 0' "$OUTDIR/summary.json" 2>/dev/null || echo 0)"
+audit "phase=done failures=$fails tokens=$TOKENS"
+
+echo "codex-fleet: done — $fails/$NJOBS failed. Summary: $OUTDIR/summary.md"
+[ $fails -eq 0 ]

@@ -1,0 +1,151 @@
+{
+  "name": "print",
+  "aliases": [
+    "lp",
+    "cups"
+  ],
+  "kind": "tool",
+  "description": "Preview-first printing to the CUPS queues on this Mac (AirPrint / IPP Everywhere): `send` shows the exact lp command, sheets, the raster it will push and every warning, prints only with --yes, then watches the printer's page counter and kills a runaway job; `status` reads both the CUPS queue and the printer's own and names the problem; `unstick` and `cancel` recover",
+  "hits": "the local CUPS daemon (lp/lpstat/cancel/cupsenable) and each printer's own IPP endpoint (ipptool/ippfind) — the operator's paper and toner",
+  "surface": "CLI only. `printers`/`status`/`jobs`/`options` are free. `send` previews (printer, files, pages → sheets, media, dpi/quality/color, the uncompressed raster per page, the lp line, printer-reported problems) and exits 0; `--yes` runs lp and a watchdog that cancels the job on the Mac and inside the printer and disables the queue if the printer's page count passes the plan; 5 copies / 60 sheets / 5 files per call are code constants; resolution/quality are the printer's own unless asked, and asking warns. `cancel <job>` and `resume` are ungated recovery; `cancel --all` and `unstick` preview then take --yes. An audit line per send/runaway/cancel/unstick/resume on stderr and in ~/.local/state/print/audit.log",
+  "readme_label": "`tools/print`",
+  "platforms": [
+    "darwin"
+  ],
+  "origin": {
+    "vendored_at": "2026-08-29",
+    "note": "authored in this belt; no upstream. Node, zero dependencies: shells out to the CUPS binaries that ship with macOS"
+  },
+  "runtime": {
+    "node": ">=18",
+    "package_manager": "none"
+  },
+  "entrypoints": {
+    "cli": "node print.mjs"
+  },
+  "env": [
+    {
+      "name": "PRINT_HOME",
+      "required": false,
+      "secret": false,
+      "description": "State dir: audit.log and hosts.json (resolved dnssd → ipp URIs). Default ~/.local/state/print. Tests use a temp dir"
+    }
+  ],
+  "auth": {
+    "principal": "none",
+    "flow": "no credential: CUPS and the printers accept jobs from anyone on the LAN; the belt adds nothing",
+    "caches": []
+  },
+  "safeguards": [
+    "Preview by default: send prints the printer, every file with its kind/pages/size, media, copies, sheets, dpi/quality/color mode, the uncompressed raster per page, the exact lp command and every warning, then exits 0 without calling lp; only --yes prints (cmdSend in print.mjs) — the flag tier for private, reversible spend (SENSIBILITIES #2, #5)",
+    "--yes is always honored: paper and toner are the operator's own, so the gate prevents the accidental job and never refuses the deliberate one (SENSIBILITIES #2)",
+    "Ceilings are code constants no flag raises: MAX_COPIES = 5, MAX_SHEETS = 60 (pages × copies per call), MAX_FILES = 5; above any of them send exits 2 naming the constant (SENSIBILITIES #3)",
+    "Conservative raster defaults in code: send passes no printer-resolution or print-quality unless --dpi/--quality is given, and then the preview warns that overrides are the risky path (a draft/300 dpi job printed ~200 pages of garbage on the Brother); an image page above RASTER_SLOW_MB = 15 is announced as a multi-minute transfer so nobody cancels it early",
+    "Runaway guard: after --yes, watchJob() polls CUPS and the printer every WATCH_INTERVAL_S = 5 s; if the printer's job-impressions-completed exceeds the planned sheets by more than RUNAWAY_GRACE = 1 it cancels the CUPS job, sends cancel-job to the printer, runs cupsdisable so the spooler cannot re-feed it, audits verb=runaway and exits 1 naming the resume verb; --no-watch is the deliberate opt-out (SENSIBILITIES #3, #8)",
+    "The preview also asks the printer: a paper-out, jam, cover-open or stalled-job condition the printer reports is printed as a warning before the human decides (SENSIBILITIES #5)",
+    "cancel <job> and resume are deliberately ungated: they are the recovery direction (a stuck queue is the failure this tool exists to fix) and every job is re-sendable; cancel --all and unstick, which also cancel jobs the operator did not submit, preview and take --yes",
+    "Every send, cancel, unstick and resume appends `[print audit] <ts> verb= printer= job= …` to $PRINT_HOME/audit.log (dir 700, file 600) and stderr; the exact lp options are in the send line (SENSIBILITIES #7)",
+    "Every subprocess has a timeout (lp/lpstat 30 s, ipptool -T 8, ippfind -T 3); a printer that does not answer is reported as unreachable and the tool continues with what CUPS knows — no hang, no retry storm (SENSIBILITIES #8)",
+    "Job ids passed to cancel must match Printer_Name-N and file paths must exist as regular files before anything is spawned; every argument reaches lp via execFile argv, never a shell",
+    "No credential exists in this tool (auth.principal none); hosts.json holds only printer names and ipp:// URIs (SENSIBILITIES #11)",
+    "The tiers are a table in the code (VERBS in print.mjs) and the test suite asserts this manifest's verbs[] matches it"
+  ],
+  "verbs": [
+    {
+      "name": "printers",
+      "tier": "read",
+      "surface": "cli",
+      "note": "every queue: CUPS state + device URI, and what the printer itself answers over IPP — state/reasons, accepted formats, resolutions, colour, default and loaded media, supply levels"
+    },
+    {
+      "name": "status [printer]",
+      "tier": "read",
+      "surface": "cli",
+      "note": "the CUPS queue and the printer's own job list with progress, plus a one-line diagnosis (out of paper, jam, cover, stalled raster, asleep)"
+    },
+    {
+      "name": "jobs",
+      "tier": "read",
+      "surface": "cli",
+      "note": "lpstat -o parsed"
+    },
+    {
+      "name": "options <printer>",
+      "tier": "read",
+      "surface": "cli",
+      "note": "lpoptions -p <printer> -l — the option names and values the queue accepts"
+    },
+    {
+      "name": "send <file…>",
+      "tier": "write-gated",
+      "gate": "flag",
+      "surface": "cli",
+      "note": "preview (files, sheets, raster, lp line, printer-reported problems) then --yes; ceilings 5 copies / 60 sheets / 5 files; printer-default resolution unless asked; a watchdog after --yes kills a job whose printer page count passes the plan (--no-watch opts out); audit line per job"
+    },
+    {
+      "name": "cancel <job-id…> | --all",
+      "tier": "write",
+      "surface": "cli",
+      "note": "one or more CUPS jobs by id: ungated recovery, audited. --all previews the job list then takes --yes"
+    },
+    {
+      "name": "unstick <printer>",
+      "tier": "write-gated",
+      "gate": "flag",
+      "surface": "cli",
+      "note": "preview: the CUPS jobs and the on-device jobs it would cancel and the cupsenable that follows; --yes does it and reports whether the printer dropped its jobs (it can take ~2 minutes; otherwise power-cycle)"
+    },
+    {
+      "name": "resume <printer>",
+      "tier": "write",
+      "surface": "cli",
+      "note": "cupsenable — re-enable a queue CUPS stopped after a backend failure; ungated recovery, audited"
+    },
+    {
+      "name": "lpadmin (add/remove/modify queues), printer web-admin settings, firmware",
+      "tier": "never",
+      "surface": "cli",
+      "note": "no verb exists; queues are managed in System Settings and the printer's own web page"
+    }
+  ],
+  "risk": {
+    "read_only": false,
+    "destructive": false,
+    "idempotent": false,
+    "open_world": false,
+    "worst_case": "up to 60 planned sheets of the operator's paper and toner per --yes send, plus RUNAWAY_GRACE + one poll interval of extra sheets before the watchdog kills a job the printer is misprinting (or unbounded with --no-watch); every queued job on one printer cancelled (re-sendable) by unstick --yes or cancel --all --yes; nothing leaves the LAN and no printer configuration is changed"
+  },
+  "systems": [
+    {
+      "name": "Printers on this Mac (CUPS / AirPrint)",
+      "read": "node print.mjs printers",
+      "preferred": true
+    }
+  ],
+  "checks": [
+    {
+      "use": "runtime.node",
+      "min": "18"
+    },
+    {
+      "use": "custom",
+      "script": "checks/cups-tools.mjs",
+      "label": "CUPS binaries present (lp, lpstat, ipptool, ippfind …) and at least one queue configured"
+    },
+    {
+      "use": "files.dir_writable",
+      "path": "~/.local/state/print",
+      "severity": "warn",
+      "label": "state dir writable (audit.log, hosts.json)",
+      "fix": "mkdir -p ~/.local/state/print"
+    }
+  ],
+  "smoke_test": {
+    "command": "PRINT_HOME=$(mktemp -d) node print.mjs --help >/dev/null && node print.mjs send package.json -p nonexistent-queue-for-smoke 2>&1 | grep -qE 'no printer|no printers configured' && node --test test/*.test.mjs",
+    "expect": "usage renders; a send to an unknown queue is refused before lp is ever called; unit tests green — ceilings, plan/raster math, printer-default resolution, override warnings, diagnosis, lpstat/ipptool parsers, audit permissions, manifest/VERBS parity. Nothing is printed"
+  },
+  "do_not_vendor": [
+    "~/.local/state/print/ — audit.log and hosts.json are live state, never in the tree"
+  ],
+  "core": false
+}

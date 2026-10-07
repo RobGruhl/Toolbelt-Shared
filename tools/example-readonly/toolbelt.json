@@ -1,0 +1,92 @@
+{
+  "name": "example-readonly",
+  "aliases": ["exr"],
+  "kind": "tool",
+  "description": "Read-only GitHub public-API CLI — the template for a read-only belt tool: in-code limit ceiling, --explain pre-flight, audit line, optional token from env or a 600-mode file",
+  "hits": "GitHub (public API)",
+  "surface": "read-only CLI; GET only, no write code exists",
+  "platforms": ["darwin", "win32"],
+  "origin": {
+    "vendored_at": "2026-08-22",
+    "note": "authored in this kit as the read-only example"
+  },
+  "runtime": {
+    "node": ">=18",
+    "package_manager": "none"
+  },
+  "entrypoints": {
+    "cli": "node exr.mjs"
+  },
+  "env": [
+    {
+      "name": "GITHUB_TOKEN",
+      "required": false,
+      "secret": true,
+      "description": "Optional GitHub token; raises the rate limit from 60 to 5000 req/hr. Alternative: ~/.config/exr/token mode 600"
+    }
+  ],
+  "auth": {
+    "principal": "user",
+    "flow": "Optional personal access token from $GITHUB_TOKEN or a 600-mode key file; unauthenticated reads work out of the box at GitHub's 60 req/hr",
+    "login": "Create a fine-grained personal access token in GitHub (Settings > Developer settings) with no write permissions; export GITHUB_TOKEN or write it to ~/.config/exr/token (chmod 600)",
+    "identity": "node exr.mjs repo octocat/Hello-World --explain",
+    "caches": [
+      {
+        "path": "~/.config/exr/token",
+        "class": "static",
+        "store": "file",
+        "note": "optional 600-mode key file; exr refuses group/world-readable permissions",
+        "revoke": "Delete the token in GitHub > Settings > Developer settings > Personal access tokens"
+      }
+    ]
+  },
+  "safeguards": [
+    "Read-only by construction: every request is a GET and no write code exists (SENSIBILITIES #1)",
+    "Hard 100-item --limit ceiling and 10-item default — code constants in exr.mjs, not flags; a higher --limit is refused, not lowered (SENSIBILITIES #3)",
+    "--explain pre-flight prints the exact URL and headers with the token redacted, and makes no call (SENSIBILITIES #5)",
+    "Audit line to stderr per call: timestamp, verb, target — never the token (SENSIBILITIES #7)",
+    "20s request timeout; rate limit, 404 and network failure each get a plain message and exit 1, no retries (SENSIBILITIES #8)",
+    "Token from $GITHUB_TOKEN or ~/.config/exr/token only; a group/world-readable key file is refused; the token is never printed or logged (SENSIBILITIES #11)"
+  ],
+  "verbs": [
+    { "name": "repo", "tier": "read", "note": "stars, forks, open issues, default branch, pushed_at for one owner/name" },
+    { "name": "releases", "tier": "read", "note": "most recent releases; --limit N up to the 100 ceiling, default 10" },
+    { "name": "search", "tier": "read", "note": "repository search; GitHub's own search rate limit is 10/min unauthenticated" },
+    { "name": "any GitHub write (issues, PRs, stars, repos, releases)", "tier": "never", "note": "no write code exists; every request is a GET" }
+  ],
+  "risk": {
+    "read_only": true,
+    "destructive": false,
+    "idempotent": true,
+    "open_world": false,
+    "worst_case": "spends the operator's GitHub rate-limit budget (60/hr unauthenticated, 5000/hr with a token) on public reads capped at 100 items each"
+  },
+  "systems": [
+    {
+      "name": "GitHub (public API)",
+      "read": "node exr.mjs repo octocat/Hello-World",
+      "preferred": true
+    }
+  ],
+  "checks": [
+    { "use": "runtime.node", "min": "18" },
+    {
+      "use": "files.env_set",
+      "name": "GITHUB_TOKEN",
+      "key_file": "~/.config/exr/token",
+      "severity": "warn",
+      "label": "GitHub token present (optional — raises the rate limit)",
+      "fix": "Optional: export GITHUB_TOKEN or write a token to ~/.config/exr/token (chmod 600). Without one, exr works at 60 req/hr"
+    },
+    {
+      "use": "mcp.http_reachable",
+      "url": "https://api.github.com",
+      "severity": "warn",
+      "label": "api.github.com reachable"
+    }
+  ],
+  "smoke_test": {
+    "command": "node exr.mjs repo octocat/Hello-World --explain && node --test test/*.test.mjs",
+    "expect": "pre-flight renders the request without calling GitHub; unit tests green"
+  }
+}

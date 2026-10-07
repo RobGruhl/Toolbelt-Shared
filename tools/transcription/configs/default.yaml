@@ -1,0 +1,14 @@
+# Default transcription preset
+name: default
+description: Standard transcription with auto language detection
+
+backend: whisper_cpp
+base_url: http://127.0.0.1:2022
+timeout: 600
+
+# Let whisper auto-detect language
+language: null
+prompt: null
+timestamps: false
+
+output_format: txt

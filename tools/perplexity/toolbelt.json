@@ -1,0 +1,119 @@
+{
+  "name": "perplexity",
+  "aliases": ["pplx"],
+  "kind": "tool",
+  "description": "Read-only Perplexity CLI + client lib: Search API (raw web results, flat-rate) and Agent API (Claude with live web search); every call is paid, so in-code ceilings, --explain cost pre-flight and an audit line per request",
+  "hits": "Perplexity API (web search)",
+  "surface": "read-only CLI `pplx search` / `pplx agent` + importable `lib/perplexity.js`; both endpoints only read the web; spend bounded by code ceilings (20 results, 4096 output tokens), `--explain` prices a call before it is made, one audit line per paid request",
+  "readme_label": "`tools/perplexity` (`pplx`)",
+  "platforms": ["darwin"],
+  "origin": {
+    "repo": "https://github.com/RobGruhl/hello-perplexity.git",
+    "vendored_commit": "bc5dedf",
+    "vendored_at": "2026-08-22",
+    "note": "the hello-perplexity workshop (lib/, examples/, docs/); the research-*.js one-off scripts and their JSON output were untracked there and are not vendored"
+  },
+  "runtime": {
+    "node": ">=18",
+    "package_manager": "npm"
+  },
+  "install": [
+    {
+      "run": "npm install",
+      "description": "Install dotenv locally — only examples/*.js import it",
+      "why": "the examples load a .env with `import 'dotenv/config'`; pplx.mjs and lib/ have no dependencies and run without this step",
+      "yes": "node_modules/ is created inside tools/perplexity; no call to Perplexity is made",
+      "no": "skipped; the CLI and tests still work, the examples fail on import until you run it"
+    }
+  ],
+  "entrypoints": {
+    "cli": "node pplx.mjs"
+  },
+  "env": [
+    {
+      "name": "PERPLEXITY_API_KEY",
+      "required": true,
+      "secret": true,
+      "description": "Your Perplexity API key (pplx-…), from perplexity.ai/settings/api; billed to your own account. Alternative: ~/.config/toolbelt/perplexity.key mode 600 (a looser mode is refused)"
+    }
+  ],
+  "auth": {
+    "principal": "user",
+    "flow": "Static API key the operator creates in the Perplexity console, billed to their own account; read from $PERPLEXITY_API_KEY, else a 600-mode key file outside the tree. Nothing is cached; there is no login verb",
+    "login": "Create a key at https://www.perplexity.ai/settings/api, then: export PERPLEXITY_API_KEY=pplx-… — or: mkdir -p ~/.config/toolbelt && printf '%s\\n' pplx-… > ~/.config/toolbelt/perplexity.key && chmod 600 ~/.config/toolbelt/perplexity.key",
+    "identity": "node pplx.mjs search ping --explain",
+    "caches": [
+      {
+        "path": "~/.config/toolbelt/perplexity.key",
+        "class": "static",
+        "store": "file",
+        "note": "optional 600-mode key file; resolveKey() in lib/perplexity.js refuses group/world-readable modes; an in-tree .env (gitignored) is the examples' deprecated fallback",
+        "revoke": "Delete the key at https://www.perplexity.ai/settings/api"
+      }
+    ]
+  },
+  "safeguards": [
+    "Read-only by construction: both endpoints (/search, /v1/agent) return web results and nothing on the Perplexity side is created, changed or deleted; the CLI exposes no other endpoint (SENSIBILITIES #1)",
+    "In-code ceilings in lib/constants.js CEILINGS, enforced by assertCeiling() in lib/perplexity.js and pplx.mjs: 20 search results, 5 batch queries, 20000 search tokens, 4096 agent output tokens, 4096 chat tokens; a value above one is refused with exit 2, not lowered; max_output_tokens is always sent (default 2048) so no call's price is unbounded (SENSIBILITIES #3)",
+    "--explain pre-flight in pplx.mjs prints the exact request with the key redacted and the worst-case dollar cost at the ceilings, and makes no call (SENSIBILITIES #5)",
+    "Audit line to stderr on every paid request — request() in lib/perplexity.js: timestamp, endpoint, model, HTTP status, elapsed ms, input/output/total tokens and cost when the API reports them, the error text on failure; never the key, query or response (SENSIBILITIES #7)",
+    "Per-request timeouts (30 s search, 120 s agent) via AbortSignal.timeout; 401, 429, timeout and network failure each get one plain sentence and exit 1, no retries (SENSIBILITIES #8)",
+    "Key from $PERPLEXITY_API_KEY or ~/.config/toolbelt/perplexity.key only; resolveKey() refuses a group/world-readable key file; the key is never printed, logged or placed on argv (SENSIBILITIES #11)"
+  ],
+  "verbs": [
+    { "name": "search", "tier": "read", "surface": "cli", "note": "POST /search — raw ranked web results + citations, flat $0.005 per call; --limit ≤ 20, domain/recency/date filters" },
+    { "name": "agent", "tier": "read", "surface": "cli", "note": "POST /v1/agent — Claude (Sonnet default; opus/haiku aliases) with Perplexity web search; token-priced, ≈$0.02 typical, ≤≈$0.11 at the ceilings; --explain shows the worst case first" },
+    { "name": "chat / reason / deepResearch (Sonar models)", "tier": "never", "surface": "cli", "note": "library functions retained in lib/perplexity.js for reference and importers; no CLI verb — the house rule is search()+agent() only; deep research can take minutes and dollars per call" }
+  ],
+  "risk": {
+    "read_only": true,
+    "destructive": false,
+    "idempotent": true,
+    "open_world": false,
+    "worst_case": "spends the operator's own Perplexity credit: at most ≈$0.005 per search and ≈$0.11 per agent call at the in-code ceilings, each call audited to stderr with its actual cost"
+  },
+  "systems": [
+    {
+      "name": "Perplexity (web search)",
+      "read": "node pplx.mjs search \"<query>\" --limit 5",
+      "preferred": true
+    }
+  ],
+  "checks": [
+    { "use": "runtime.node", "min": "18" },
+    {
+      "use": "deps.npm_installed",
+      "severity": "warn",
+      "fix": "cd {TOOLBELT}/tools/perplexity && npm install   (or: toolbelt setup perplexity) — only the examples need it; pplx.mjs and the tests do not"
+    },
+    {
+      "use": "files.env_set",
+      "name": "PERPLEXITY_API_KEY",
+      "key_file": "~/.config/toolbelt/perplexity.key",
+      "severity": "warn",
+      "label": "Perplexity API key present ($PERPLEXITY_API_KEY or a 600-mode ~/.config/toolbelt/perplexity.key)",
+      "fix": "Create a key at https://www.perplexity.ai/settings/api, then export PERPLEXITY_API_KEY=… or write it to ~/.config/toolbelt/perplexity.key (chmod 600)"
+    },
+    {
+      "use": "mcp.http_reachable",
+      "url": "https://api.perplexity.ai",
+      "severity": "warn",
+      "label": "api.perplexity.ai reachable"
+    }
+  ],
+  "smoke_test": {
+    "command": "node pplx.mjs search smoke test --explain >/dev/null && node pplx.mjs agent smoke test --explain >/dev/null && node --test test/*.test.mjs",
+    "expect": "both pre-flights render without a key and without a call; 8 unit tests green (ceilings, parsing, key-file refusal, audit line) — no node_modules needed"
+  },
+  "do_not_vendor": [
+    ".env",
+    "node_modules/",
+    "tmp/",
+    "output/",
+    "*.log",
+    "research-*.js",
+    "research-*.json",
+    "gemini-enterprise-comparison.md"
+  ],
+  "core": false
+}

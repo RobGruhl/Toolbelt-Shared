@@ -1,0 +1,13 @@
+{
+  "name": "openai-image",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "description": "Preview-first OpenAI image generation CLI (gpt-image-2) and client library",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "openai": "^7.5.0"
+  }
+}

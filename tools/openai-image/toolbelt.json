@@ -1,0 +1,181 @@
+{
+  "name": "openai-image",
+  "aliases": [
+    "oimg",
+    "gpt-image"
+  ],
+  "kind": "tool",
+  "description": "Preview-first OpenAI image generation (gpt-image-2): generate, edit with references or a mask, multi-turn via the Responses API. Every paid call previews its model, size, quality, estimated cost and output paths, runs only with --yes, writes only inside --out, leaves an audit line per image, and stops and asks the operator once real 24h spend would pass $50",
+  "hits": "OpenAI Images API + Responses API (paid, the operator's own key)",
+  "surface": "CLI only. `models` is free. `generate`/`edit`/`responses` preview (model, size, quality, n, estimated cost, output files) and exit 0; `--yes` runs the paid call; output is contained in `--out`, never overwritten; n <= 4 and an estimated $2.00 per call are code constants; an audit line per image on stderr and in ~/.local/share/openai-image/audit.log; a 24h hard ask: when real spend (audit-log tokens at TOKEN_RATES) over the last 24h plus this call would pass $50 (+ human allowances), --yes stops with exit 3 and the caller asks the operator; after they acknowledge an amount, `oimg allow --usd N --note \"<their words>\" --yes` raises the line for 24h; `spend` reports real spend for free",
+  "readme_label": "`tools/openai-image` (`oimg`)",
+  "platforms": [
+    "darwin"
+  ],
+  "origin": {
+    "repo": "https://github.com/RobGruhl/hello-gpt-image.git",
+    "vendored_commit": "f958bf2",
+    "vendored_at": "2026-08-22",
+    "note": "Vendored lib/ and docs/ + README only. Left behind on purpose: the one-off gen-*.js / lancer-*.js / s8-*.js render scripts (both the tracked gen-condo-*.js, gen-laurelhurst-pride.js, lancer-heat-cards.js and the ~20 untracked ones), examples/ (ungated paid calls; the CLI covers each pattern), .env.example (the belt reads the key from env or a 600-mode key file, never an in-tree .env), refs/ and output/ (project assets). The source tree was dirty at copy time; every uncommitted file was a one-off script, refs/ or .claude/, so nothing uncommitted was hand-copied. Model, pricing and parameter facts were updated to the 2026-08-22 brief in docs/openai-image-best-practices.md; constants.js, gpt-image.js and the oimg CLI are this belt's."
+  },
+  "runtime": {
+    "node": ">=20",
+    "package_manager": "npm"
+  },
+  "install": [
+    {
+      "run": "npm install",
+      "description": "Install the openai SDK locally from the committed lockfile",
+      "why": "lib/gpt-image.js imports it; nothing is installed globally",
+      "yes": "node_modules/ is created inside tools/openai-image; no call to OpenAI is made",
+      "no": "skipped; every oimg verb fails on import until you run it"
+    }
+  ],
+  "entrypoints": {
+    "cli": "node oimg.mjs"
+  },
+  "env": [
+    {
+      "name": "OPENAI_API_KEY",
+      "required": false,
+      "secret": true,
+      "description": "Your own OpenAI API key from an organization that has completed API verification (gpt-image-* models 403 otherwise). Alternative: ~/.config/toolbelt/openai-image.key, mode 600. Not needed for `models` or for any preview"
+    },
+    {
+      "name": "OPENAI_IMAGE_HOME",
+      "required": false,
+      "secret": false,
+      "description": "Where audit.log lives. Default ~/.local/share/openai-image. Tests point it at a temp dir"
+    }
+  ],
+  "auth": {
+    "principal": "user",
+    "flow": "A personal OpenAI API key, from $OPENAI_API_KEY or a 600-mode key file; the key is read by lib/gpt-image.js resolveKey(), sent only in the Authorization header by the openai SDK, and never printed, logged, or placed on argv",
+    "login": "Create a key at https://platform.openai.com/api-keys in a verified organization, then: mkdir -p ~/.config/toolbelt && umask 077 && printf '%s\\n' 'sk-…' > ~/.config/toolbelt/openai-image.key",
+    "caches": [
+      {
+        "path": "~/.config/toolbelt/openai-image.key",
+        "class": "static",
+        "store": "file",
+        "note": "optional 600-mode key file; resolveKey() refuses a group/world-readable one. $OPENAI_API_KEY takes precedence when set",
+        "revoke": "Delete the key at https://platform.openai.com/api-keys, then rm ~/.config/toolbelt/openai-image.key"
+      }
+    ]
+  },
+  "safeguards": [
+    "Preview by default: generate, edit and responses print the model, size, quality, n, the estimated cost and its basis, the input files, and every output path, then exit 0 without a network call; only --yes runs it (oimg.mjs main(), renderPreview()) — the flag tier for paid-but-private spend (SENSIBILITIES #2, #5)",
+    "--yes is always honored: this is the operator's own money on a private surface, so the gate prevents the accidental call and never refuses the deliberate one (SENSIBILITIES #2)",
+    "Two ceilings are code constants in oimg.mjs that no flag raises: MAX_N = 4 images per call (the API allows 10) and MAX_EST_USD = 2.00 estimated spend per call; a request above either is refused with exit 2 naming the constant (SENSIBILITIES #3)",
+    "The 24h HARD ASK (HARD_ASK_USD = 50 in oimg.mjs, lib/spend.js): before any paid call, real spend over the rolling last 24 hours (audit-log tokens_out/tokens_in at TOKEN_RATES; est_usd only where tokens are missing) plus this call's estimate is compared with $50 plus human allowances from the last 24h; over it, --yes stops with exit 3 and tells the caller to ask the operator. The gate counts the total because many cheap calls are how money actually goes (2026-10-05: 513 renders, each under the $2 per-call ceiling, ≈$100)",
+    "`oimg allow` is the hard ask's door, in the flag tier at Rob's direction (an acknowledgment in conversation, not a terminal ritual): it previews without --yes, requires --usd N (max MAX_ALLOW_USD = 500) and --note with the operator's acknowledgment in their words, and appends {at, usd, note} to ~/.local/share/openai-image/allowances.log (600); allowances expire after 24h. The code cannot tell who wrote the note — CLAUDE.md is the contract: only the operator's own yes to that amount counts (SENSIBILITIES #2)",
+    "Containment: --out <dir> is required, every file is written inside it (planOutputs() resolves and asserts the parent), --name is restricted to [A-Za-z0-9._-], the filesystem root and the home directory are refused as --out, and an existing file is never overwritten (refuseExisting() before the call, O_EXCL on write)",
+    "Size is validated against the gpt-image-2 constraints before any call (parseSize(): edges x16, <= 3840px, ratio <= 3:1, pixel bounds) and sizes above 2560x1440 are labelled experimental in the preview",
+    "Audit line per image written, on stderr and appended to ~/.local/share/openai-image/audit.log (dir 700, file 600): timestamp, verb, model, size, quality, estimated USD, file, bytes from a re-stat of the written file, token usage, response id — never the key, never the prompt text beyond the preview (SENSIBILITIES #7)",
+    "Estimates are honest about their basis: preset sizes use per-image prices — gpt-image-2's calibrated from observed token usage (7,024 out at 1024² high ≈ $0.211), since the page-derived figures were ~5x low, custom sizes are scaled by pixel count and say so, quality auto is priced as high, edits and responses name what the estimate omits (input-image tokens; the mainline model's text tokens)",
+    "The key comes from $OPENAI_API_KEY or ~/.config/toolbelt/openai-image.key only; a group/world-readable key file is refused; there is no in-tree .env and dotenv is not a dependency; the preview reports only whether a credential was found and from where (SENSIBILITIES #11)",
+    "180s request timeout; moderation_blocked, 429 and 403 (unverified organization) each get a plain message and exit 1 with no retry (SENSIBILITIES #8)",
+    "The tiers are a table in the code (VERBS in oimg.mjs) and the test suite asserts this manifest's verbs[] matches it"
+  ],
+  "verbs": [
+    {
+      "name": "models",
+      "tier": "read",
+      "surface": "cli",
+      "note": "model ids, per-image prices, token rates and rate-limit tiers from constants.js; no network"
+    },
+    {
+      "name": "spend",
+      "tier": "read",
+      "surface": "cli",
+      "note": "real spend over the last 24h from audit-log token counts at TOKEN_RATES, the hard-ask line and headroom; no network"
+    },
+    {
+      "name": "allow",
+      "tier": "write-gated",
+      "gate": "flag",
+      "surface": "cli",
+      "note": "after the operator acknowledges $N in conversation: raises the 24h hard-ask line by N (max 500) for 24h; --note records their words; previews without --yes; never on an agent's own initiative"
+    },
+    {
+      "name": "generate",
+      "tier": "write-gated",
+      "gate": "flag",
+      "surface": "cli",
+      "note": "paid, private: preview (model, size, quality, n, est cost, output paths) then --yes; n <= 4, est <= $2.00 per call are code constants; output only inside --out; audit line per image"
+    },
+    {
+      "name": "edit",
+      "tier": "write-gated",
+      "gate": "flag",
+      "surface": "cli",
+      "note": "paid, private: same preview → --yes; up to 16 --image inputs and an optional alpha --mask; input_fidelity is dropped for gpt-image-2 (the API rejects it); the estimate excludes input-image tokens and says so"
+    },
+    {
+      "name": "responses",
+      "tier": "write-gated",
+      "gate": "flag",
+      "surface": "cli",
+      "note": "paid, private: Responses API image_generation tool on gpt-5.6 with --previous <response-id> for multi-turn edits; one image per call; the estimate excludes the mainline model's text tokens and says so"
+    },
+    {
+      "name": "variations (dall-e-2), Files API upload, batch",
+      "tier": "never",
+      "surface": "cli",
+      "note": "no verb exists; lib/gpt-image.js exposes stream() for callers who import it, but the CLI has no streaming verb"
+    }
+  ],
+  "risk": {
+    "read_only": false,
+    "destructive": false,
+    "idempotent": false,
+    "open_world": false,
+    "worst_case": "up to $2.00 (estimated) per --yes call, and at most $50 of real spend per rolling 24h (plus whatever the operator acknowledged) before the tool stops and asks; image files written under a directory the operator named; nothing is deleted or overwritten and nothing leaves the operator's account"
+  },
+  "systems": [
+    {
+      "name": "OpenAI image generation (gpt-image-2)",
+      "read": "node oimg.mjs models",
+      "preferred": true
+    }
+  ],
+  "checks": [
+    {
+      "use": "runtime.node",
+      "min": "20"
+    },
+    {
+      "use": "deps.npm_installed",
+      "severity": "warn",
+      "fix": "cd {TOOLBELT}/tools/openai-image && npm ci   (or: toolbelt setup openai-image) — the CLI needs the openai SDK; the unit tests do not call it"
+    },
+    {
+      "use": "files.env_set",
+      "name": "OPENAI_API_KEY",
+      "key_file": "~/.config/toolbelt/openai-image.key",
+      "severity": "warn",
+      "label": "OpenAI API key present (env, or a 600-mode ~/.config/toolbelt/openai-image.key) — needed only to spend",
+      "fix": "mkdir -p ~/.config/toolbelt && umask 077 && printf '%s\\n' 'sk-…' > ~/.config/toolbelt/openai-image.key — from a verified organization (gpt-image-* 403 otherwise)"
+    },
+    {
+      "use": "mcp.http_reachable",
+      "url": "https://api.openai.com/v1/models",
+      "severity": "warn",
+      "label": "api.openai.com reachable (401 without a key counts)"
+    }
+  ],
+  "smoke_test": {
+    "command": "OPENAI_API_KEY= node oimg.mjs models >/dev/null && node oimg.mjs spend >/dev/null && OPENAI_API_KEY= node oimg.mjs generate 'smoke test' --out output --quality high | grep -q 'PREVIEW, nothing sent' && node --test test/*.test.mjs",
+    "expect": "after npm ci: the price table renders; a paid verb previews and makes no call with no credential; unit tests green — ceilings, size constraints, estimates, containment, request builders, key-file permissions, manifest/VERBS parity"
+  },
+  "do_not_vendor": [
+    "node_modules/",
+    ".env",
+    "output/",
+    "tmp/",
+    "*.log",
+    "gen-*.js and other one-off render scripts",
+    "examples/",
+    "refs/"
+  ],
+  "core": false
+}

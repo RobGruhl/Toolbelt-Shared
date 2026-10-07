@@ -1,0 +1,12 @@
+{
+  "name": "example-readonly",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "exr — the Toolbelt read-only example tool: GitHub public API reads, no dependencies",
+  "bin": { "exr": "./exr.mjs" },
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

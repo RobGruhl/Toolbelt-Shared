@@ -1,0 +1,140 @@
+{
+  "name": "gmail-harvest",
+  "aliases": ["gmh"],
+  "kind": "tool",
+  "description": "Read-only, byte-exact Gmail export on the operator's own OAuth grant (scope gmail.readonly only): raw RFC 822 bytes straight to <id>.eml files plus a metadata index, so bulk mail reads never pass through a model",
+  "hits": "Gmail API (bulk / byte-exact export)",
+  "surface": "read-only CLI; scope gmail.readonly only, GET only, no write code exists; `export` writes .eml files only to a directory the operator names (never `/`, `$HOME`, or the belt); 5000-message ceiling in code, `--explain` pre-flight, audit log; `links` prints exact hrefs from one exported .eml (local, no network)",
+  "readme_label": "`tools/gmail-harvest` (`gmh`)",
+  "platforms": ["darwin"],
+  "origin": {
+    "vendored_at": "2026-09-23",
+    "note": "authored in this belt; shares the OAuth Desktop-app client (Keychain item google-workspace-oauth) with connectors/google-workspace but holds its own read-only grant"
+  },
+  "runtime": {
+    "node": ">=20",
+    "package_manager": "none"
+  },
+  "install": [
+    {
+      "action": "symlink",
+      "from": "/opt/homebrew/bin/gmh",
+      "to": "{TOOLBELT}/tools/gmail-harvest/gmh.mjs",
+      "description": "Put gmh on PATH by linking the brew bin dir at the belt's copy",
+      "why": "consumers (the jev-test triage prototype, shell use) call `gmh export` bare; the link makes that name resolve to this file",
+      "yes": "/opt/homebrew/bin/gmh points at tools/gmail-harvest/gmh.mjs; `gmh` works from any directory",
+      "no": "nothing changes; call it as `node {TOOLBELT}/tools/gmail-harvest/gmh.mjs` or `toolbelt run gmh -- …`"
+    }
+  ],
+  "entrypoints": {
+    "cli": "node gmh.mjs"
+  },
+  "env": [
+    {
+      "name": "GOOGLE_OAUTH_CLIENT_ID",
+      "required": false,
+      "secret": false,
+      "description": "Fallback only: the OAuth Desktop-app client id when the Keychain item google-workspace-oauth is absent (its account field is the canonical home)"
+    },
+    {
+      "name": "GOOGLE_OAUTH_CLIENT_SECRET",
+      "required": false,
+      "secret": true,
+      "description": "Fallback only: the client secret when the Keychain item is absent. Canonical home: macOS Keychain generic-password service google-workspace-oauth, read by gmh via execFile — never on argv, never printed"
+    }
+  ],
+  "auth": {
+    "principal": "user",
+    "flow": "Google OAuth 2.0 authorization-code flow with PKCE (S256) and a random state on the operator's own Desktop-app client: `gmh auth` opens the browser consent for exactly https://www.googleapis.com/auth/gmail.readonly, Google redirects to an ephemeral 127.0.0.1 loopback port, and the access + refresh tokens are cached per account in a 600-mode file. Every API call runs as the operator; a grant carrying any other scope is refused",
+    "login": "node gmh.mjs auth --account <you@example.com>   (interactive browser consent; 5-minute wait)",
+    "identity": "node gmh.mjs status   (account, scope, expiry, mode — never a token value; no network)",
+    "caches": [
+      {
+        "path": "~/.config/toolbelt/gmail-harvest/<account>.json",
+        "class": "derived",
+        "store": "file",
+        "ttl_hours": 1,
+        "refresh": "automatic refresh-token grant with no human; on invalid_grant re-run `gmh auth` (Testing-status consent screens expire refresh tokens 7 days after consent)",
+        "revoke": "rm ~/.config/toolbelt/gmail-harvest/<account>.json, then https://myaccount.google.com/permissions > remove the app (this also removes the connectors/google-workspace grant on the same client)",
+        "note": "dir 700, file 600, written atomically; gmh refuses to read a group/world-readable file or one whose scope is not exactly gmail.readonly. Holds access_token, refresh_token, expiry, scope, account, client_id, consented_at"
+      },
+      {
+        "path": "keychain: generic-password service=google-workspace-oauth",
+        "class": "static",
+        "store": "keychain",
+        "refresh": "security add-generic-password -U -s google-workspace-oauth -a \"<client id>\" -w   (prompts for the secret; never pass it on argv)",
+        "revoke": "security delete-generic-password -s google-workspace-oauth; then delete the OAuth client in the Cloud console (breaks connectors/google-workspace too)",
+        "note": "shared with connectors/google-workspace: the account field holds the client id, the password is the client secret"
+      }
+    ]
+  },
+  "safeguards": [
+    "Read-only by construction: the only OAuth scope ever requested is gmail.readonly (buildAuthUrl refuses any other), every Gmail request is a GET, no write code exists, and a token whose granted scope set is not exactly gmail.readonly is refused on consent, on refresh and on read (SENSIBILITIES #1)",
+    "Ceilings are code constants in gmh.mjs: MAX_MESSAGES 5000 per export or list (a higher --max is refused, not lowered), DEFAULT_MAX 500, CONCURRENCY 4, TIMEOUT_MS 30000 (SENSIBILITIES #3)",
+    "`export --explain` resolves credentials and runs the list only: it reports the match count against the ceiling, the output dir, the resume state and the call estimate, fetches no bodies and writes nothing to the output dir; a token refreshed during it is kept in memory only (SENSIBILITIES #5)",
+    "Token cache ~/.config/toolbelt/gmail-harvest/<account>.json is dir 700 / file 600 outside the tree; a group/world-readable file is refused, not read; `status` reports metadata only and no verb prints a token (SENSIBILITIES #6)",
+    "One audit line per verb run to stderr and ~/.local/share/toolbelt/gmail-harvest/audit.log (dir 700, file 600): timestamp, verb, account, query or ids-file, count, bytes, failures, out dir — never tokens, never message content (SENSIBILITIES #7)",
+    "Export output is contained: `/`, $HOME itself and any path inside the Toolbelt tree (symlinks resolved) are refused; the dir is created 700 and every .eml and index.jsonl is written 600",
+    "Per-message failures are appended to index.jsonl as {id, error}, never dropped, and exit 1; export is resumable and skips an id only when its index record is a success and its .eml exists at the recorded byte count (SENSIBILITIES #8)",
+    "Politeness: 4 concurrent requests, up to 4 attempts with exponential backoff on 429 / 5xx / rate-limit 403 honoring Retry-After, and a stop after 10 consecutive per-message failures (SENSIBILITIES #9)",
+    "The client secret is read from the macOS Keychain with execFile (never argv, never a shell, never printed), falling back to GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET (SENSIBILITIES #11)"
+  ],
+  "verbs": [
+    { "name": "auth", "tier": "read", "note": "token verb: interactive browser consent for gmail.readonly; writes only the operator's own 600-mode token file" },
+    { "name": "status", "tier": "read", "note": "token presence, mode, scope, expiry; no network unless --live (users/me/profile)" },
+    { "name": "whoami", "tier": "read", "note": "users/me/profile: email, messagesTotal, threadsTotal" },
+    { "name": "list", "tier": "read", "note": "users.messages.list: message ids + threadIds, --max up to the 5000 ceiling" },
+    { "name": "links", "tier": "read", "note": "local only: parses one exported .eml (MIME walk, QP/base64, charsets) and prints anchor text → exact href; no network, no auth" },
+    { "name": "export", "tier": "read", "note": "users.messages.get format=raw → <id>.eml (exact bytes, 600) + index.jsonl in a directory the operator names; writes only local files the operator asked for; --explain pre-flights" },
+    { "name": "send mail (messages.send, drafts.send)", "tier": "never", "note": "no send code and no gmail.send scope" },
+    { "name": "modify labels / archive / mark read (messages.modify, batchModify, threads.modify, labels.*)", "tier": "never", "note": "no modify code and no gmail.modify scope" },
+    { "name": "trash / untrash / delete (messages.trash, batchDelete, delete, threads.trash)", "tier": "never", "note": "no delete code; gmail.readonly cannot trash or delete" },
+    { "name": "drafts (create, update, delete)", "tier": "never", "note": "no drafts code and no gmail.compose scope" },
+    { "name": "insert / import messages", "tier": "never", "note": "no insert code and no gmail.insert scope" },
+    { "name": "filters, forwarding, settings (settings.*)", "tier": "never", "note": "no settings code and no gmail.settings.* scope" }
+  ],
+  "risk": {
+    "read_only": true,
+    "destructive": false,
+    "idempotent": true,
+    "open_world": false,
+    "worst_case": "exports up to 5000 private messages (full bodies and attachments) to a local directory the operator named, and spends the operator's per-user Gmail API quota; nothing in the mailbox changes"
+  },
+  "systems": [
+    {
+      "name": "Gmail (bulk / byte-exact export)",
+      "read": "node gmh.mjs whoami",
+      "preferred": true
+    }
+  ],
+  "checks": [
+    { "use": "runtime.node", "min": "20" },
+    {
+      "use": "secrets.keychain_item",
+      "service": "google-workspace-oauth",
+      "severity": "warn",
+      "label": "OAuth Desktop-app client in the macOS Keychain (service google-workspace-oauth, shared with connectors/google-workspace)",
+      "fix": "security add-generic-password -U -s google-workspace-oauth -a \"<client id>\" -w   (prompts for the secret; never put it on argv)"
+    },
+    {
+      "use": "custom",
+      "script": "checks/token-cache.mjs",
+      "label": "gmh token cache (~/.config/toolbelt/gmail-harvest/<account>.json): mode 600, scope exactly gmail.readonly, refresh token present"
+    },
+    {
+      "use": "mcp.http_reachable",
+      "url": "https://gmail.googleapis.com",
+      "severity": "warn",
+      "label": "gmail.googleapis.com reachable"
+    }
+  ],
+  "smoke_test": {
+    "command": "node gmh.mjs --help && node --test test/*.test.mjs",
+    "expect": "usage renders; unit tests and the in-memory export test are green — no network, no credential"
+  },
+  "do_not_vendor": [
+    "~/.config/toolbelt/gmail-harvest/ (OAuth token cache)",
+    "~/.local/share/toolbelt/gmail-harvest/audit.log (names accounts and queries)",
+    "any export directory (private mail; containment refuses the tree)"
+  ]
+}

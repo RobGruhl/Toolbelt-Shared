@@ -1,0 +1,110 @@
+{
+  "name": "gmail-filters",
+  "aliases": ["gmf"],
+  "kind": "tool",
+  "description": "Propose Gmail filters from triage evidence (JSONL, one record per message) — a sender is proposed only when every observed message was zero-touch — and export the operator-approved rows as a Gmail-importable mailFilters.xml; one-click (RFC 8058) unsubscribe from an operator-signed approval list behind --yes; no Gmail writes, no credential",
+  "hits": "Gmail filters (local plan + importable XML)",
+  "surface": "local-only CLI; no Gmail API client, no OAuth, no write scope; `plan` writes a 600-mode plan file, `export` writes approved rows only as mailFilters.xml the operator imports by hand; one non-zero-touch message blocks a sender; trash needs a policy match plus a second approval; never overwrites, never writes into `/`, `$HOME` or the belt; `--live` counts via read-only `gmh list`; `unsub-plan` classifies unsubscribe methods from export headers; `unsubscribe` sends RFC 8058 one-click POSTs only for an operator-signed approval list, previewing until the operator's `--yes`; audit log",
+  "readme_label": "`tools/gmail-filters` (`gmf`)",
+  "platforms": ["darwin"],
+  "origin": {
+    "vendored_at": "2026-09-23",
+    "note": "authored in this belt; composes with tools/gmail-harvest (read-only) for --live counts"
+  },
+  "runtime": {
+    "node": ">=20",
+    "package_manager": "none"
+  },
+  "install": [
+    {
+      "action": "symlink",
+      "from": "/opt/homebrew/bin/gmf",
+      "to": "{TOOLBELT}/tools/gmail-filters/gmf.mjs",
+      "description": "Put gmf on PATH by linking the brew bin dir at the belt's copy",
+      "why": "the review loop (plan → show → export) is typed by hand from wherever the evidence and plan live",
+      "yes": "/opt/homebrew/bin/gmf points at tools/gmail-filters/gmf.mjs; `gmf` works from any directory",
+      "no": "nothing changes; call it as `node {TOOLBELT}/tools/gmail-filters/gmf.mjs` or `toolbelt run gmf -- …`"
+    }
+  ],
+  "entrypoints": {
+    "cli": "node gmf.mjs"
+  },
+  "env": [
+    {
+      "name": "GMF_POLICY",
+      "required": false,
+      "secret": false,
+      "description": "Path to the sender policy (default ~/.config/toolbelt/gmail-filters/policy.json, mode 600)"
+    },
+    {
+      "name": "GMH_BIN",
+      "required": false,
+      "secret": false,
+      "description": "gmh executable `plan --live` calls (default {TOOLBELT}/tools/gmail-harvest/gmh.mjs, run under node)"
+    }
+  ],
+  "auth": {
+    "principal": "none",
+    "flow": "gmf holds no credential. `plan --live` runs `gmh list`, which reads Gmail on gmh's own gmail.readonly grant (tools/gmail-harvest); without --live gmf touches no network",
+    "caches": []
+  },
+  "safeguards": [
+    "No Gmail write code exists: no API client, no OAuth, no scope; the only network path is `plan --live`, which runs the read-only `gmh list` via execFile (SENSIBILITIES #1)",
+    "The never-filter-important-mail rule is code: a sender is proposed only when every observed message is in cleanup or auto_handled; one message in any other bucket (or none) blocks it and lists it under `blocked`; a message seen in several runs keeps every bucket it was given; a domain filter needs ≥2 addresses that each qualify and no blocked or protected address at that domain",
+    "Trash is never proposed unless the sender matches the policy trash list, and then the row carries requires_explicit_approval; export emits shouldTrash only when the row has both approved: true and approved_trash: true, and refuses a trash action without them",
+    "Export renders only rows whose approved is the JSON boolean true, refuses a row whose criteria differ from the query its match builds (what was reviewed is what exports), and XML-escapes every value",
+    "Ceilings are code constants in gmf.mjs: MAX_FILTERS 200 per plan, MIN_EVIDENCE 3 by default with a floor of 2 (a lower --min is refused) (SENSIBILITIES #3)",
+    "Output is contained: plan and XML files are created 600 and never overwrite; `/`, $HOME itself and any path inside the Toolbelt tree are refused, because both files name senders",
+    "One audit line per verb run to stderr and ~/.local/share/toolbelt/gmail-filters/audit.log (dir 700, file 600): timestamp, verb, input and output paths, counts — never a sender or message content (SENSIBILITIES #7)",
+    "The operator's sender policy lives outside the tree at ~/.config/toolbelt/gmail-filters/policy.json and a group/world-readable one is refused; the tree carries only policy.json.example (SENSIBILITIES #11)"
+  ],
+  "verbs": [
+    { "name": "plan", "tier": "read", "note": "reads evidence JSONL, writes a 600-mode plan file the operator named (or stdout); --live adds gmh list counts (gmail.readonly)" },
+    { "name": "show", "tier": "read", "note": "the plan as a table; reads a local file" },
+    { "name": "export", "tier": "read", "note": "approved rows → a new 600-mode mailFilters.xml the operator named; never overwrites; --explain writes nothing. Import into Gmail is the human's step in the web UI" },
+    { "name": "create / delete Gmail filters (settings.filters.*)", "tier": "never", "note": "no Gmail API code and no gmail.settings.basic scope in this phase" },
+    { "name": "modify labels / archive / mark read (messages.modify, batchModify, labels.*)", "tier": "never", "note": "no modify code and no gmail.modify scope; existing mail is untouched" },
+    { "name": "trash / delete messages", "tier": "never", "note": "no trash or delete code; shouldTrash exists only as an XML property the human imports" },
+    { "name": "unsub-plan", "tier": "read", "note": "headers of gmh export directories → candidates file (method one_click/mailto/landing/none, target host, DKIM alignment); no network; writes a new 600-mode file the operator named, never overwrites" },
+    { "name": "unsubscribe", "tier": "write-gated", "gate": "flag", "note": "RFC 8058 one-click POST to each sender on an operator-signed approval file (schema gmail-filters.unsubscribe/1: approved_by + the operator's words); previews and sends nothing without --yes; https public hosts only, no cookies or credentials, redirects followed only with --follow-redirects; at most MAX_UNSUB 100 per run; resumable results log (600) beside the approval; read back later with gmh list" },
+    { "name": "unsubscribe by mailto / landing page", "tier": "never", "note": "no code sends mail or drives a browser; senders without one-click get a filter instead" }
+  ],
+  "risk": {
+    "read_only": false,
+    "destructive": false,
+    "idempotent": true,
+    "open_world": true,
+    "worst_case": "an approved unsubscribe cannot be undone by gmf (resubscribe by hand at the sender); writes a plan and an XML file naming the operator's senders to a local path the operator chose; a filter only reaches Gmail when the operator imports the XML by hand, and a wrongly approved filter archives (or, with double approval, trashes) matching new mail until deleted"
+  },
+  "systems": [
+    {
+      "name": "Gmail filters",
+      "read": "node gmf.mjs --help",
+      "preferred": true
+    }
+  ],
+  "checks": [
+    { "use": "runtime.node", "min": "20" },
+    {
+      "use": "custom",
+      "script": "checks/policy.mjs",
+      "label": "gmf sender policy (~/.config/toolbelt/gmail-filters/policy.json): mode 600, valid labels and lists"
+    },
+    {
+      "use": "files.exists",
+      "path": "{TOOLBELT}/tools/gmail-harvest/gmh.mjs",
+      "severity": "warn",
+      "label": "gmh present for `plan --live` (optional)",
+      "fix": "plan --live needs tools/gmail-harvest; without it plan runs evidence-only"
+    }
+  ],
+  "smoke_test": {
+    "command": "node gmf.mjs --help && node --test test/*.test.mjs",
+    "expect": "usage renders; unit and CLI tests green — no network, no Gmail"
+  },
+  "do_not_vendor": [
+    "~/.config/toolbelt/gmail-filters/policy.json (names the operator's senders)",
+    "~/.local/share/toolbelt/gmail-filters/audit.log",
+    "any plan.json or mailFilters.xml (sender addresses; containment refuses the tree)"
+  ]
+}

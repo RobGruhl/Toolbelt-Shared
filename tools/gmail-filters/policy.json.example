@@ -1,0 +1,18 @@
+{
+  "_comment": "Copy to ~/.config/toolbelt/gmail-filters/policy.json and chmod 600. Labels use '/' nesting and Title Case. Domains match their subdomains; 'a@b.com' is an exact address.",
+  "labels": {
+    "cleanup": "Promo",
+    "auto_handled": "Receipts",
+    "auto_handled_by_domain": {
+      "uber.com": "Receipts/Uber",
+      "amazon.com": "Receipts/Amazon"
+    }
+  },
+  "trash": [
+    "marketing.example.com"
+  ],
+  "protect": [
+    "school.example.org",
+    "billing@example.com"
+  ]
+}

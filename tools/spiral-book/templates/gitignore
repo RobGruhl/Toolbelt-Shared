@@ -1,0 +1,11 @@
+# Generated Typst files (built from .md by pandoc)
+guide/*.md.typ
+
+# Build output
+guide/*.pdf
+
+# Python venv (only if you `poetry add pypdf` locally)
+.venv/
+
+# macOS
+.DS_Store

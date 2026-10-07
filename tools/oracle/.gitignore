@@ -1,0 +1,20 @@
+# Real config and credentials never enter the tree; the .example is vendored
+.oraclerc
+.env
+.env.*
+*.key
+*.pem
+credentials.json
+
+# Per-tool local state: consultation history, request manifests, packed artifacts, audit log
+data/
+
+# Node
+node_modules/
+
+# Repomix output dropped in the tool dir by hand
+*.xml
+*.repomix
+
+.DS_Store
+*.log

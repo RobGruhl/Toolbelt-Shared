@@ -1,0 +1,99 @@
+{
+  "name": "outlook-harvest",
+  "aliases": ["omh"],
+  "kind": "tool",
+  "description": "Read-only, byte-exact Outlook.com / Hotmail export through Microsoft Graph on the operator's own grant (delegated Mail.Read only): each message's MIME bytes to <id>.eml plus a gmh-compatible index.jsonl, so bulk mail reads never pass through a model",
+  "hits": "Microsoft Graph mail (personal Outlook.com / Hotmail; bulk / byte-exact export)",
+  "surface": "read-only CLI; Graph permission Mail.Read only, GET only, no write code exists; device-code sign-in (phone-friendly); `export` writes .eml files only to a directory the operator names (never `/`, `$HOME`, or the belt); index.jsonl in gmh's shape (gmf unsub-plan, gmh links and jev-test read it unchanged); 5000-message ceiling in code, `--explain` pre-flight, audit log",
+  "readme_label": "`tools/outlook-harvest` (`omh`)",
+  "platforms": ["darwin"],
+  "origin": {
+    "vendored_at": "2026-09-29",
+    "note": "authored in this belt as gmh's Microsoft twin; public client registered by the operator in Microsoft Entra (no secret)"
+  },
+  "runtime": { "node": ">=20", "package_manager": "none" },
+  "install": [
+    {
+      "action": "symlink",
+      "from": "/opt/homebrew/bin/omh",
+      "to": "{TOOLBELT}/tools/outlook-harvest/omh.mjs",
+      "description": "Put omh on PATH by linking the brew bin dir at the belt's copy",
+      "why": "exports are typed by hand and by agents from wherever the private export directory lives",
+      "yes": "/opt/homebrew/bin/omh points at tools/outlook-harvest/omh.mjs",
+      "no": "nothing changes; call it as `node {TOOLBELT}/tools/outlook-harvest/omh.mjs`"
+    }
+  ],
+  "entrypoints": { "cli": "node omh.mjs" },
+  "env": [
+    { "name": "OUTLOOK_CLIENT_ID", "required": false, "secret": false, "description": "The app registration's Application (client) ID; normally saved once by `omh auth --client-id` to ~/.config/toolbelt/outlook-harvest/client.json (a public client: there is no secret)" }
+  ],
+  "auth": {
+    "principal": "user",
+    "flow": "OAuth 2.0 device-code flow against login.microsoftonline.com/consumers with the operator's own public client: `omh auth` prints a code, the human enters it at microsoft.com/devicelogin on any device and consents to Mail.Read; access + refresh tokens are cached per account in a 600-mode file. A grant whose Graph permissions are not exactly {Mail.Read} is refused on consent, on refresh and on read",
+    "login": "node omh.mjs auth --client-id <GUID>   (device code; waits up to the code's lifetime)",
+    "identity": "node omh.mjs status   (account, scope, expiry, mode — never a token value; no network)",
+    "caches": [
+      {
+        "path": "~/.config/toolbelt/outlook-harvest/<account>.json",
+        "class": "derived",
+        "store": "file",
+        "ttl_hours": 1,
+        "refresh": "automatic refresh-token grant; if refused, re-run `omh auth`",
+        "revoke": "rm ~/.config/toolbelt/outlook-harvest/<account>.json, then https://account.live.com/consent/Manage > remove the app",
+        "note": "dir 700, file 600, written atomically; holds access_token, refresh_token, expiry, scope, account, client_id, consented_at"
+      },
+      {
+        "path": "~/.config/toolbelt/outlook-harvest/client.json",
+        "class": "static",
+        "store": "file",
+        "refresh": "omh auth --client-id <GUID>",
+        "revoke": "rm the file; delete the app registration in Microsoft Entra",
+        "note": "the public client id only (not a secret)"
+      }
+    ]
+  },
+  "safeguards": [
+    "Read-only by construction: the only Graph permission requested is Mail.Read, every Graph request is a GET, no write code exists, and a token whose Graph permissions are not exactly {Mail.Read} is refused on consent, on refresh and on read (SENSIBILITIES #1)",
+    "Ceilings are code constants in omh.mjs: MAX_MESSAGES 5000 per export or list (a higher --max is refused), DEFAULT_MAX 500, CONCURRENCY 4, TIMEOUT_MS 30000 (SENSIBILITIES #3)",
+    "`export --explain` lists and counts only: match count against the ceiling, output dir, resume state; fetches no bodies and writes nothing (SENSIBILITIES #5)",
+    "Token cache is dir 700 / file 600 outside the tree; a group/world-readable file is refused; `status` reports metadata only (SENSIBILITIES #6)",
+    "One audit line per verb run to stderr and ~/.local/share/toolbelt/outlook-harvest/audit.log (600): verb, account, selection, counts, bytes, failures, out dir — never tokens or content (SENSIBILITIES #7)",
+    "Export output is contained: `/`, $HOME itself and any path inside the Toolbelt tree are refused; the dir is created 700 and every file is written 600",
+    "File names are sha256-derived from Graph's immutable ids (safe on case-insensitive disks); per-message failures are index lines {id, error} and exit 1; export is resumable (SENSIBILITIES #8)",
+    "Politeness: 4 concurrent requests, up to 4 attempts with backoff on 429 / 5xx honoring Retry-After, stop after 10 consecutive failures (SENSIBILITIES #9)"
+  ],
+  "verbs": [
+    { "name": "auth", "tier": "read", "note": "token verb: device-code sign-in for Mail.Read; writes only the operator's own 600-mode token and client files" },
+    { "name": "status", "tier": "read", "note": "token presence, mode, scope, expiry; no network" },
+    { "name": "whoami", "tier": "read", "note": "mailFolders: folder totals and unread counts" },
+    { "name": "list", "tier": "read", "note": "message ids by folder and date window or KQL search, --max up to 5000" },
+    { "name": "export", "tier": "read", "note": "messages/{id}/$value → <id>.eml (exact MIME, 600) + index.jsonl (gmh shape, plus graph_id and source_link) in a directory the operator names; --explain pre-flights" },
+    { "name": "send / reply / forward (sendMail, createReply, …)", "tier": "never", "note": "no send code and no Mail.Send permission" },
+    { "name": "move / delete / mark read / categorize (messages PATCH/DELETE, move)", "tier": "never", "note": "no modify code and no Mail.ReadWrite permission" },
+    { "name": "rules, settings, forwarding (mailboxSettings, messageRules)", "tier": "never", "note": "no settings code and no MailboxSettings permission" }
+  ],
+  "risk": {
+    "read_only": true,
+    "destructive": false,
+    "idempotent": true,
+    "open_world": false,
+    "worst_case": "exports up to 5000 private messages (full MIME incl. attachments) to a local directory the operator named; nothing in the mailbox changes"
+  },
+  "systems": [
+    { "name": "Outlook.com / Hotmail (bulk / byte-exact export)", "read": "node omh.mjs whoami", "preferred": true }
+  ],
+  "checks": [
+    { "use": "runtime.node", "min": "20" },
+    { "use": "custom", "script": "checks/token-cache.mjs", "label": "omh token cache (~/.config/toolbelt/outlook-harvest/<account>.json): mode 600, Graph scope exactly Mail.Read, refresh token present" },
+    { "use": "mcp.http_reachable", "url": "https://graph.microsoft.com", "severity": "warn", "label": "graph.microsoft.com reachable" }
+  ],
+  "smoke_test": {
+    "command": "node omh.mjs --help && node --test test/*.test.mjs",
+    "expect": "usage renders; unit tests and the in-memory device-code + export tests are green — no network, no credential"
+  },
+  "do_not_vendor": [
+    "~/.config/toolbelt/outlook-harvest/ (token cache, client id)",
+    "~/.local/share/toolbelt/outlook-harvest/audit.log (names accounts)",
+    "any export directory (private mail; containment refuses the tree)"
+  ]
+}

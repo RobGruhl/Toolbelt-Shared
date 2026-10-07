@@ -1,0 +1,195 @@
+{
+  "name": "oracle",
+  "aliases": [
+    "ask-the-oracle"
+  ],
+  "kind": "tool",
+  "description": "Ask the Oracle: pack a codebase with Repomix and send it to OpenAI GPT-5.5 Pro for a 10-20 minute deep analysis; the paid send previews its estimate and file list and proceeds only on --yes or a yes at /dev/tty",
+  "hits": "OpenAI (Responses API, gpt-5.5-pro) — the operator's own API key",
+  "surface": "CLI + the `ask-the-oracle` Claude Code skill (a symlink into this dir). `estimate`, `status`, `retrieve`, `list`, `cleanup` are free reads; `submit`/`ask` are the paid send: estimate + file list + sensitive-file warning first, then yes on /dev/tty or an explicit `--yes` a human supplied; with no terminal (or `--json`) exit 7 and the `--yes` re-run, nothing sent. Code-level $10 per-request ceiling; audit line per send to data/audit.log; packed source and history stay under data/ (mode 600), never /tmp",
+  "platforms": [
+    "darwin"
+  ],
+  "origin": {
+    "repo": "https://github.com/RobGruhl/ask-the-oracle.git",
+    "vendored_commit": "023b727",
+    "vendored_at": "2026-08-22",
+    "note": "Vendored from HEAD plus the one uncommitted line (a doc comment in providers/base-provider.js). Dropped: scripts/ (three one-off drift-check scripts hard-wired to another project's paths and request ids), .claude/settings.local.json and .claude-plugin/plugin.json (the source repo's own Claude Code config and plugin-marketplace metadata — the belt installs the skill by symlink), bun.lock (npm is the belt's package manager; package-lock.json is committed instead). The same skill was also installed as a full copy at ~/.claude/skills/ask-the-oracle inside the RobGruhl/claude-skills repo; `toolbelt setup oracle` renames that copy to .pre-toolbelt and links the belt's — delete the copy from claude-skills by hand."
+  },
+  "runtime": {
+    "node": ">=18",
+    "package_manager": "npm"
+  },
+  "install": [
+    {
+      "run": "npm install",
+      "description": "Install Node dependencies locally (openai, repomix, chalk, ora) from the committed lockfile",
+      "why": "the CLI imports the OpenAI SDK and Repomix; nothing is installed globally and no network call to OpenAI is made",
+      "yes": "node_modules/ is created inside tools/oracle from package-lock.json",
+      "no": "skipped; every oracle.js invocation fails on import until you run it"
+    },
+    {
+      "action": "symlink",
+      "from": "~/.claude/skills/ask-the-oracle",
+      "to": "{TOOLBELT}/tools/oracle/skills/ask-the-oracle",
+      "description": "Install the ask-the-oracle skill where Claude Code discovers it, as a link into this tool",
+      "why": "the skill's SKILL.md and scripts live here now; a link means one copy, one set of gates, one place to edit",
+      "yes": "~/.claude/skills/ask-the-oracle becomes a symlink into the belt; a real directory already there (the old full copy, tracked in the claude-skills repo) is renamed to ask-the-oracle.pre-toolbelt, never deleted — remove it from that repo yourself afterwards",
+      "no": "nothing changes outside the tree; Claude Code keeps using whatever copy is at ~/.claude/skills/ask-the-oracle and the doctor keeps warning"
+    }
+  ],
+  "entrypoints": {
+    "cli": "node oracle.js"
+  },
+  "env": [
+    {
+      "name": "OPENAI_API_KEY",
+      "required": false,
+      "secret": true,
+      "description": "The operator's own OpenAI API key. Read from the environment first, else from the macOS Keychain generic password with service OPENAI_API_KEY (security add-generic-password -s OPENAI_API_KEY -a \"$USER\" -w). Needed for submit/ask/status/retrieve/cancel; estimate, list and cleanup run without it"
+    },
+    {
+      "name": "ORACLE_DATA_DIR",
+      "required": false,
+      "secret": false,
+      "description": "Where history, request manifests, packed artifacts and audit.log live. Default tools/oracle/data (gitignored). Tests point it at a temp dir"
+    }
+  ],
+  "auth": {
+    "principal": "user",
+    "flow": "The operator's own OpenAI API key, resolved per call from $OPENAI_API_KEY or the Keychain; no tool-local credential file. A literal key in a project's .oraclerc still works but is the deprecated plaintext form",
+    "login": "security add-generic-password -s OPENAI_API_KEY -a \"$USER\" -w   # or export OPENAI_API_KEY in the shell",
+    "caches": [
+      {
+        "path": "Keychain: generic password, service OPENAI_API_KEY",
+        "class": "static",
+        "store": "keychain",
+        "revoke": "Revoke the key at platform.openai.com/api-keys, then: security delete-generic-password -s OPENAI_API_KEY",
+        "note": "presence is checked by checks/openai-key.mjs without reading the value; the value is read by providers/base-provider.js readKeychain() on the first network call and handed to the SDK only"
+      }
+    ]
+  },
+  "safeguards": [
+    "The paid send (submit, ask) is the flag tier of SENSIBILITIES #2: passSpendGate() in skills/ask-the-oracle/scripts/oracle.js shows the cost estimate, the full file list and the sensitive-file warning, then takes a typed yes on /dev/tty (never stdin), or proceeds at once on an explicit --yes; with no terminal, or under --json, it exits 7 (CONFIRMATION_REQUIRED) with the exact --yes re-run and sends nothing. --yes is always honored: this bills the operator's own account, so refusing a deliberate send would only push the work to an unguarded path",
+    "Continuations (--continue=<id>) pass the same gate; their preview says the cost cannot be estimated up front because the server re-bills the earlier context",
+    "Code-level per-request cost ceiling (DEFAULT_LIMITS in oracle-service.js: $10.00 max, $5.00 warn) applies even when no .oraclerc exists; a .oraclerc may set a different limit, and a limit above $25 is named in the warnings on every run (SENSIBILITIES #3). Above the ceiling the send is refused with COST_LIMIT_EXCEEDED, before any network call",
+    "estimate is the dry run (SENSIBILITIES #5): packs, counts tokens, prices, names sensitive files, writes the artifact and its sidecar under data/artifacts/, makes no network call and needs no key",
+    "Sensitive-file warning (SENSITIVE_PATTERNS in oracle-service.js: .env, .pem, .key, .p12, .pfx, id_rsa, id_ed25519, .secret, credentials) is printed in every preview and carried in the JSON estimate; it is a filename check, not a content scan",
+    "Audit line on every paid call and on cancel (audit() in oracle-service.js): timestamp, verb, provider, model, estimated cost, pack tokens, file count, sensitive count, request id, cwd — appended to data/audit.log (mode 600) and mirrored to stderr; a provider call that fails (401, 429, network) is recorded as verb=submit-failed / cancel-failed with the error's first line, so every attempt is on the record whether or not it was billed; never the question, the packed source, or the key (SENSIBILITIES #7)",
+    "Packed source, request manifests and consultation history live under tools/oracle/data/ (dir 700, files 600; gitignored by the root .gitignore as tools/*/data/), never in /tmp and never in the analyzed project's tree unless its .oraclerc sets ui.historyPath; cleanup prunes artifacts older than 24h from that dir only",
+    "Degraded mode is named (SENSIBILITIES #8): with no .oraclerc the tool runs on built-in defaults and says so; with no key the warnings say which verbs still work; the OpenAI client is built lazily so estimate/list/cleanup never touch the credential",
+    "The key is read from $OPENAI_API_KEY or the Keychain (readKeychain() in providers/base-provider.js: `security find-generic-password -s OPENAI_API_KEY -w`, darwin only) and handed to the SDK; no verb prints it, the doctor checks presence without -w, and nothing under the tree stores it (SENSIBILITIES #6, #11)",
+    "ask detaches on timeout by default (the request keeps running server-side; status/retrieve pick it up); --cancel-on-timeout is overridden to detach when the estimated cost is at or above the warn threshold, so an expensive in-flight answer is not thrown away by a timer",
+    "Polling honors 429/5xx with capped exponential backoff (waitForCompletion in oracle-service.js); the default 3s poll interval is in code"
+  ],
+  "verbs": [
+    {
+      "name": "estimate",
+      "tier": "read",
+      "surface": "cli",
+      "note": "the dry run: pack, count, price, list sensitive files; writes only data/artifacts/; no network, no key"
+    },
+    {
+      "name": "status",
+      "tier": "read",
+      "surface": "cli",
+      "note": "one poll of the operator's own request"
+    },
+    {
+      "name": "retrieve",
+      "tier": "read",
+      "surface": "cli",
+      "note": "fetches the finished answer and writes it to data/history/"
+    },
+    {
+      "name": "list",
+      "tier": "read",
+      "surface": "cli",
+      "note": "recent request manifests from data/history/"
+    },
+    {
+      "name": "cleanup",
+      "tier": "read",
+      "surface": "cli",
+      "note": "deletes packed artifacts older than 24h under data/artifacts/ only"
+    },
+    {
+      "name": "submit",
+      "tier": "write-gated",
+      "gate": "flag",
+      "surface": "cli",
+      "note": "paid, private: preview (estimate + file list + sensitive files) then yes on /dev/tty or --yes; no terminal or --json → exit 7 with the --yes re-run, nothing sent; a no at the terminal → exit 8; audit line on send and on a failed send (tested end-to-end against a mock provider via OPENAI_BASE_URL)"
+    },
+    {
+      "name": "ask",
+      "tier": "write-gated",
+      "gate": "flag",
+      "surface": "cli",
+      "note": "submit + wait + present, same gate as submit; detaches on timeout"
+    },
+    {
+      "name": "cancel",
+      "tier": "write",
+      "surface": "cli",
+      "note": "private and spend-reducing: cancels the operator's own in-flight request; no gate because the only effect is stopping a bill; audit line"
+    },
+    {
+      "name": "any OpenAI account, key, file or fine-tune mutation",
+      "tier": "never",
+      "surface": "cli",
+      "note": "the SDK can; the belt calls responses.create/retrieve/cancel only"
+    }
+  ],
+  "risk": {
+    "read_only": false,
+    "destructive": false,
+    "idempotent": false,
+    "open_world": false,
+    "worst_case": "one deliberate --yes sends the packed source of whatever patterns were named (including any file the sensitive-file pattern list misses) to OpenAI and bills up to the $10 default per-request ceiling — or more if a project's .oraclerc raised it — on the operator's own account"
+  },
+  "systems": [
+    {
+      "name": "OpenAI GPT-5.5 Pro (deep code analysis)",
+      "read": "node oracle.js estimate \"src/**/*.js\"",
+      "preferred": true
+    }
+  ],
+  "checks": [
+    {
+      "use": "runtime.node",
+      "min": "18"
+    },
+    {
+      "use": "deps.npm_installed"
+    },
+    {
+      "use": "custom",
+      "script": "checks/openai-key.mjs",
+      "label": "OpenAI key reachable ($OPENAI_API_KEY or Keychain; presence only)"
+    },
+    {
+      "use": "files.symlink_valid",
+      "path": "~/.claude/skills/ask-the-oracle",
+      "target": "{TOOLBELT}/tools/oracle/skills/ask-the-oracle",
+      "severity": "warn",
+      "label": "ask-the-oracle skill linked into the belt",
+      "fix": "Run: {TOOLBELT}/bin/toolbelt setup oracle — links ~/.claude/skills/ask-the-oracle here (an existing real dir is renamed .pre-toolbelt, not deleted)"
+    },
+    {
+      "use": "mcp.http_reachable",
+      "url": "https://api.openai.com/v1/models",
+      "severity": "warn",
+      "label": "api.openai.com reachable"
+    }
+  ],
+  "smoke_test": {
+    "command": "export ORACLE_DATA_DIR=\"$(mktemp -d)\" && node oracle.js --version && node oracle.js estimate --json skills/ask-the-oracle/SKILL.md > /dev/null && npm test",
+    "expect": "version prints; the dry-run estimate packs one file and prices it with no network call and no key; the unit suite (mock providers, no API) is green; ORACLE_DATA_DIR points at a temp dir so nothing lands under data/"
+  },
+  "do_not_vendor": [
+    ".oraclerc (a real config may hold a literal key) — .oraclerc.example is vendored",
+    "data/ — consultation history, request manifests, packed source artifacts, audit.log",
+    "node_modules/",
+    "*.xml / *.repomix — a Repomix pack dropped in the tool dir by hand is someone's source code"
+  ]
+}

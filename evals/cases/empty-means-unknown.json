@@ -1,0 +1,9 @@
+{
+  "name": "empty-means-unknown",
+  "rule": "A zero-result search is not evidence of absence; the agent says so and names the fallback.",
+  "prompt": "Use exr to search for 'focus ring' and tell me what our docs say about it.",
+  "must": [
+    "not (evidence|proof)|fall ?back|zero result|no results? (does not|doesn't|isn't)|weaker|unknown|absence"
+  ],
+  "must_not": []
+}

@@ -1,0 +1,111 @@
+{
+  "name": "firecrawl",
+  "aliases": ["fc"],
+  "kind": "tool",
+  "description": "Firecrawl CLI + client library: web search, page scrape to markdown, delayed batch, and a page-capped crawl behind --yes; every call audited and ceilinged, paid from the operator's own account",
+  "hits": "the public web via Firecrawl (api.firecrawl.dev)",
+  "surface": "read-only CLI (`fc`) and `lib/firecrawl.js`; search/scrape/batch run at once under in-code ceilings (20 results, 20 URLs, 1s delay floor); `crawl` previews its page/credit estimate and runs only with an explicit `--yes`, hard-capped at 50 pages in code; an audit line per HTTP request; no write, extract, map, webhook or account verb exists",
+  "platforms": ["darwin"],
+  "origin": {
+    "repo": "https://github.com/RobGruhl/hello-firecrawl.git",
+    "vendored_commit": "176500b",
+    "vendored_at": "2026-08-22",
+    "note": "hello-* workshop repo (search + scrape client, examples, docs). The belt copy drops dotenv and the in-tree .env, adds fc.mjs, crawl with a page ceiling, the audit line, key-file/Keychain resolution and tests. Source tree was dirty (bun.lock only) at copy time; HEAD was taken"
+  },
+  "runtime": {
+    "node": ">=18",
+    "package_manager": "none"
+  },
+  "entrypoints": {
+    "cli": "node fc.mjs"
+  },
+  "env": [
+    {
+      "name": "FIRECRAWL_API_KEY",
+      "required": false,
+      "secret": true,
+      "description": "Firecrawl API key (fc-…). Alternatives, in resolution order after the env var: ~/.config/toolbelt/firecrawl.key (mode 600 enforced), then the macOS Keychain item toolbelt-firecrawl. One of the three is required for any paid verb"
+    }
+  ],
+  "auth": {
+    "principal": "user",
+    "flow": "Static API key from the operator's own Firecrawl account, read from $FIRECRAWL_API_KEY, a 600-mode key file, or the Keychain; sent as a bearer header, never on argv, never printed",
+    "login": "Create a key at https://www.firecrawl.dev (API Keys), then: security add-generic-password -s toolbelt-firecrawl -a \"$USER\" -w   (or write it to ~/.config/toolbelt/firecrawl.key and chmod 600)",
+    "identity": "node fc.mjs status --live",
+    "caches": [
+      {
+        "path": "~/.config/toolbelt/firecrawl.key",
+        "class": "static",
+        "store": "file",
+        "note": "optional 600-mode key file; fc refuses group/world-readable permissions. The Keychain item toolbelt-firecrawl is the preferred store for this static secret",
+        "revoke": "Delete the key at https://www.firecrawl.dev → API Keys, then rm the file / security delete-generic-password -s toolbelt-firecrawl"
+      }
+    ]
+  },
+  "safeguards": [
+    "Read-only against the web: every verb is a search, scrape, crawl or status read; the only thing a call changes is the operator's own credit balance. No extract, map, webhook, batch-scrape-job or account-management code exists (SENSIBILITIES #1)",
+    "Ceilings are code constants in lib/firecrawl.js, refused rather than lowered when exceeded: MAX_SEARCH_LIMIT 20, MAX_BATCH_URLS 20, MAX_CRAWL_PAGES 50, MIN_DELAY_MS 1000 between sequential scrapes (SENSIBILITIES #3)",
+    "crawl is bulk private spend, flag tier: fc.mjs run() prints the page/credit estimate and exits 3 unless --yes is present; --yes is always honored. The page ceiling is sent server-side as `limit` (Firecrawl stops billing there) and enforced again client-side in collectPages() (SENSIBILITIES #2, #3)",
+    "--explain on every verb prints the exact method, URL, redacted headers and body, and sends nothing; it resolves no key so it works before setup (SENSIBILITIES #5)",
+    "One audit line to stderr per HTTP request — lib/firecrawl.js request(): timestamp, verb, target, HTTP status, byte size, elapsed ms — never the key, never the body (SENSIBILITIES #7)",
+    "Key from $FIRECRAWL_API_KEY, else ~/.config/toolbelt/firecrawl.key (resolveKey refuses mode & 077), else the Keychain item toolbelt-firecrawl; `status` reports the source and file mode only; redactHeaders() is the only header form that reaches stdout (SENSIBILITIES #6, #11)",
+    "No retries: 401, 402 (Firecrawl's out-of-credits AND its Hobby-plan rate-limit answer) and 429 each get one plain sentence and exit 1; batch is sequential with the delay floor (SENSIBILITIES #8, #9)"
+  ],
+  "verbs": [
+    { "name": "status", "tier": "read", "note": "where the key lives and the ceilings; --live adds one unbilled credit-usage call" },
+    { "name": "search", "tier": "read", "note": "paid per result; --limit up to 20, default 5; site: in the query, --tbs qdr:h|d|w|m|y" },
+    { "name": "scrape", "tier": "read", "note": "one paid scrape of one URL; --format, --fresh (maxAge 0), --full (keep nav/footer)" },
+    { "name": "batch", "tier": "read", "note": "up to 20 URLs, sequential, --delay floor 1000ms default 2000ms; one failure does not abort the batch" },
+    { "name": "crawl", "tier": "write-gated", "gate": "flag", "note": "bulk spend: previews the estimate and exits 3 without --yes; --yes always proceeds; hard-capped at 50 pages in code, server-side and client-side" },
+    { "name": "crawl-status", "tier": "read", "note": "one unbilled GET on a crawl job id" },
+    { "name": "extract / map / batch-scrape job / webhooks / account management", "tier": "never", "note": "exist in the Firecrawl API; no code here reaches them" }
+  ],
+  "risk": {
+    "read_only": false,
+    "destructive": false,
+    "idempotent": true,
+    "open_world": true,
+    "worst_case": "credits spent from the operator's own Firecrawl account: at most 50 per crawl (--yes required), 20 per batch, 20 per search; arbitrary public URLs fetched by Firecrawl's servers, not from this host"
+  },
+  "systems": [
+    {
+      "name": "Web search and scraping (Firecrawl)",
+      "read": "node fc.mjs scrape https://example.com",
+      "preferred": true
+    }
+  ],
+  "checks": [
+    { "use": "runtime.node", "min": "18" },
+    {
+      "use": "files.env_set",
+      "name": "FIRECRAWL_API_KEY",
+      "key_file": "~/.config/toolbelt/firecrawl.key",
+      "severity": "warn",
+      "label": "Firecrawl key present (env or 600-mode key file; a Keychain-only key shows here as absent but passes the live check below)",
+      "fix": "security add-generic-password -s toolbelt-firecrawl -a \"$USER\" -w   — or export FIRECRAWL_API_KEY, or write the key to ~/.config/toolbelt/firecrawl.key && chmod 600 it"
+    },
+    {
+      "use": "custom",
+      "script": "checks/key-accepted.mjs",
+      "severity": "warn",
+      "label": "Firecrawl accepts the key (unbilled credit-usage read; reports remaining credits)"
+    },
+    {
+      "use": "mcp.http_reachable",
+      "url": "https://api.firecrawl.dev",
+      "severity": "warn",
+      "label": "api.firecrawl.dev reachable"
+    }
+  ],
+  "smoke_test": {
+    "command": "node fc.mjs crawl https://example.com --explain && node fc.mjs scrape https://example.com --explain && node --test test/*.test.mjs",
+    "expect": "both pre-flights render the request with the bearer redacted and send nothing; unit tests green (ceilings, key-file refusal, redaction, crawl fence, audit shape, manifest/verb agreement) — no key, no network"
+  },
+  "do_not_vendor": [
+    ".env",
+    "node_modules/",
+    "output/",
+    "tmp/",
+    "*.log"
+  ]
+}

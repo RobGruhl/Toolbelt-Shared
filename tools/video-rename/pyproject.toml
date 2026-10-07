@@ -1,0 +1,32 @@
+[tool.poetry]
+name = "video-rename"
+version = "0.1.0"
+description = "Analyze random video files with Claude vision and rename them with clear, descriptive filenames."
+authors = ["Rob Gruhl <rob.gruhl@users.noreply.github.com>"]
+readme = "README.md"
+packages = [{ include = "video_analysis", from = "src" }]
+
+[tool.poetry.dependencies]
+python = "^3.13"
+# Video decoding: PyAV (FFmpeg bindings). decord/eva-decord ship no Python 3.13 wheels.
+av = "^17.0.0"
+anthropic = "^0.80.0"
+pillow = "^11.0.0"
+python-slugify = "^8.0.4"
+typer = "^0.15.0"
+rich = "^13.9.0"
+python-dotenv = "^1.0.1"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.0"
+
+[tool.poetry.scripts]
+video-rename = "video_analysis.cli:app"
+analyze-video = "video_analysis.cli:app"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

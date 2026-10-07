@@ -1,0 +1,23 @@
+WEBVTT
+Kind: captions
+Language: en
+
+00:00:00.000 --> 00:00:02.500 align:start position:0%
+ 
+hello<00:00:01.000><c> and</c><00:00:01.500><c> welcome</c>
+
+00:00:02.500 --> 00:00:02.510 align:start position:0%
+hello and welcome
+ 
+
+00:00:02.510 --> 00:00:05.000 align:start position:0%
+hello and welcome
+to<00:00:03.000><c> the</c><00:00:03.500><c> show</c>
+
+00:00:05.000 --> 00:00:05.010 align:start position:0%
+to the show
+ 
+
+00:00:50.000 --> 00:00:52.000 align:start position:0%
+to the show
+&gt;&gt; thanks<00:00:51.000><c> for</c><00:00:51.500><c> having</c><00:00:51.800><c> me</c>

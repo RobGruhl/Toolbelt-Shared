@@ -1,0 +1,32 @@
+[project]
+name = "hello-transcription"
+version = "0.2.0"
+description = "Transcription CLI: local whisper.cpp by default (free, private), OpenAI speech-to-text on an explicit --backend openai with a cost ceiling and an audit line"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.10",
+    "pyyaml>=6.0",
+    "rich>=13.0",
+    "typer>=0.15",
+]
+
+[project.scripts]
+transcribe = "hello_transcription.cli:app"
+
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+packages = [{include = "hello_transcription", from = "src"}]
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.0"
+
+[tool.pyright]
+pythonVersion = "3.13"
+typeCheckingMode = "standard"
+venvPath = "."
+venv = ".venv"

@@ -1,0 +1,12 @@
+{
+  "name": "gmail-filters",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "gmf — propose Gmail filters from triage evidence, export approved ones as mailFilters.xml; no Gmail writes, no dependencies",
+  "bin": { "gmf": "./gmf.mjs" },
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

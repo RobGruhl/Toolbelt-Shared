@@ -1,0 +1,92 @@
+{
+  "name": "repo-integrity",
+  "kind": "tool",
+  "description": "Repo-level contract checks the doctor runs on every pass: safeguards and verb tiers must match a gate the code enforces, every credential must run as the operator, and every derived table (README, SYSTEMS.md, RISK.md) must match the manifests",
+  "hits": "this repo",
+  "surface": "doctor-run contract checks: `safeguards[]` and `verbs[]` gate claims verified against code, `auth.principal` honesty (service exceptions and ungated writes named on every run), README / SYSTEMS.md / RISK.md freshness against the manifests, every lockfile directory covered by dependabot.yml or excluded with a reason, no registry credential literal in a tracked file, every skill naming only paths and verbs that exist",
+  "platforms": [
+    "darwin"
+  ],
+  "origin": {},
+  "safeguards": [
+    "Read-only by construction: all checks read manifests, source files, and config, print one JSON verdict, and mutate nothing (SENSIBILITIES #1)"
+  ],
+  "verbs": [
+    {
+      "name": "safeguards-honesty",
+      "tier": "read"
+    },
+    {
+      "name": "principal-honesty",
+      "tier": "read"
+    },
+    {
+      "name": "readme-index",
+      "tier": "read"
+    },
+    {
+      "name": "derived-freshness",
+      "tier": "read"
+    },
+    {
+      "name": "dependabot-coverage",
+      "tier": "read"
+    },
+    {
+      "name": "no-credential-literals",
+      "tier": "read"
+    },
+    {
+      "name": "skills-rot",
+      "tier": "read"
+    }
+  ],
+  "risk": {
+    "read_only": true,
+    "destructive": false,
+    "idempotent": true,
+    "open_world": false,
+    "worst_case": "a false pass that lets a manifest over-claim slip through review"
+  },
+  "checks": [
+    {
+      "use": "custom",
+      "script": "checks/safeguards-honesty.mjs",
+      "label": "safeguards[] gate claims are enforced in code"
+    },
+    {
+      "use": "custom",
+      "script": "checks/principal-honesty.mjs",
+      "label": "every credential is the operator's own; every write verb names its real gate"
+    },
+    {
+      "use": "custom",
+      "script": "checks/readme-index.mjs",
+      "label": "README belt table matches the manifests"
+    },
+    {
+      "use": "custom",
+      "script": "checks/derived-freshness.mjs",
+      "label": "SYSTEMS.md, docs/RISK.md and docs/CREDENTIALS.md match the manifests"
+    },
+    {
+      "use": "custom",
+      "script": "checks/dependabot-coverage.mjs",
+      "label": "every lockfile directory is covered by dependabot.yml (or excluded with a reason)"
+    },
+    {
+      "use": "custom",
+      "script": "checks/no-credential-literals.mjs",
+      "label": "no package-registry credential literal in a tracked file"
+    },
+    {
+      "use": "custom",
+      "script": "checks/skills-rot.mjs",
+      "label": "every skill has a manifest and names only paths and verbs that exist"
+    }
+  ],
+  "smoke_test": {
+    "command": "node checks/safeguards-honesty.mjs && node checks/principal-honesty.mjs && node checks/readme-index.mjs && node checks/derived-freshness.mjs && node checks/dependabot-coverage.mjs && node checks/no-credential-literals.mjs && node checks/skills-rot.mjs",
+    "expect": "JSON verdict from each check"
+  }
+}

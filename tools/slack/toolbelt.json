@@ -1,0 +1,212 @@
+{
+  "name": "slack",
+  "kind": "tool",
+  "description": "Read-first Slack CLI + read-only MCP server on your own browser session: search, export, download; send/react/edit/invite TTY-gated, create-channel typed-echo with no bypass",
+  "hits": "Slack",
+  "surface": "MCP read tools + CLI (search, export, read-only file download); `send`/`react`/`edit`/`invite` preview then confirm at /dev/tty or `--yes` after a human approved the preview; `upload-file.mjs` is `--yes`-only; `create-channel` requires typing the channel name back with no `--yes`; no delete/kick/archive verb exists",
+  "platforms": [
+    "darwin",
+    "win32"
+  ],
+  "origin": {
+    "vendored_at": "2026-08-22",
+    "note": "ported into this kit from a company-specific Slack MCP+CLI; the workspace is configuration"
+  },
+  "runtime": {
+    "node": ">=22.12.0",
+    "package_manager": "npm"
+  },
+  "install": [
+    {
+      "run": "npm install",
+      "description": "Install Node dependencies locally (puppeteer-core, commander, zod, the MCP SDK) from the committed lockfile",
+      "why": "the CLI and the MCP server import these; nothing is installed globally",
+      "yes": "node_modules/ is created inside tools/slack from package-lock.json; no network call to Slack is made",
+      "no": "skipped; every cli.js and server.js invocation fails on import until you run it"
+    }
+  ],
+  "entrypoints": {
+    "cli": "cli.js",
+    "mcp_server": "server.js"
+  },
+  "env": [
+    {
+      "name": "SLACK_WORKSPACE_URL",
+      "required": true,
+      "secret": false,
+      "description": "Your workspace URL, e.g. https://yourco.slack.com/ or https://grid-yourco.enterprise.slack.com/ on Enterprise Grid. Every API call and the login go through it. Alternative: workspace_url in ~/.config/slack-cli/config.json (mode 600)"
+    },
+    {
+      "name": "SLACK_ENTERPRISE_ID",
+      "required": false,
+      "secret": false,
+      "description": "Pin the id the Edge API (user and channel search) is addressed by: the E… org id on Enterprise Grid, the T… team id otherwise. Normally unnecessary — the id is captured from auth.test at login. Alternative: enterprise_id in the config file"
+    },
+    {
+      "name": "SLACK_PERMALINK_URL",
+      "required": false,
+      "secret": false,
+      "description": "Host to build permalinks on when it differs from SLACK_WORKSPACE_URL (Enterprise Grid: the API uses the org host, shared links use the workspace host). Defaults to the workspace URL. Alternative: permalink_url in the config file"
+    },
+    {
+      "name": "SLACK_CLI_PROFILE",
+      "required": false,
+      "secret": false,
+      "description": "Override the Chrome profile directory used for the SSO session (default ~/.slack-cli/). A path containing 'slack-cli-test' runs incognito and persists nothing"
+    },
+    {
+      "name": "CHROME_PATH",
+      "required": false,
+      "secret": false,
+      "description": "Override the Chrome binary location used for the browser sign-in"
+    },
+    {
+      "name": "NODE_EXTRA_CA_CERTS",
+      "required": false,
+      "secret": false,
+      "description": "Path to your company's root CA bundle, only if TLS verification fails behind an intercepting proxy. Never disable verification instead: augment the trust store, do not switch it off"
+    },
+    {
+      "name": "SLACK_BUSINESS_HOURS",
+      "required": false,
+      "secret": false,
+      "description": "Off-hours gate window for bulk reads as HH-HH in 24-hour time (default 06-18), Monday-Friday. Alternative: business_hours in the config file"
+    },
+    {
+      "name": "SLACK_BUSINESS_TZ",
+      "required": false,
+      "secret": false,
+      "description": "IANA time zone the window is evaluated in (default: this machine's zone), e.g. America/Los_Angeles. Alternative: business_tz in the config file"
+    }
+  ],
+  "auth": {
+    "principal": "user",
+    "flow": "Your own browser session: Chrome (puppeteer-core, visible) opens the workspace URL, you sign in however your company does (any identity provider, MFA included), the tool waits for app.slack.com, then reads the xoxc token from boot_data and the slack.com cookies and caches both to a 600-mode file. No app, no bot token, no scopes beyond what you already have",
+    "login": "node cli.js login",
+    "identity": "node cli.js whoami",
+    "caches": [
+      {
+        "path": "~/.slack-cli-auth.json",
+        "ttl_hours": null,
+        "class": "session",
+        "store": "file",
+        "refresh": "node cli.js login — or run any read; Chrome opens when the cache is missing or Slack rejects the session",
+        "revoke": "rm ~/.slack-cli-auth.json, then sign out of Slack in the browser (a browser session token; Slack invalidates it on sign-out)",
+        "note": "written mode 600; tagged with the workspace host, so a cache for a different workspace is ignored rather than sent"
+      },
+      {
+        "path": "~/.slack-cli/",
+        "class": "session",
+        "store": "file",
+        "note": "dedicated Chrome profile dir holding the SSO session; SLACK_CLI_PROFILE overrides",
+        "revoke": "rm -rf ~/.slack-cli/ (./diagnose.sh --reset removes both caches)"
+      }
+    ]
+  },
+  "safeguards": [
+    "Read-first: server.js registers seven read tools and no write tool; every write is a CLI verb, none reachable from the MCP surface (SENSIBILITIES #1)",
+    "send (lib/send.js): the recipient is resolved through users.info and a full preview is printed before anything is asked; confirmOnTty() reads /dev/tty — not stdin — and requires the word \"send\"; --yes skips that prompt and is meant only for a caller that has shown a human the --dry-run preview and been told yes; with no TTY and no --yes the command exits 2 and prints the ways forward",
+    "react (lib/react.js): same preview → confirmReactOnTty() on /dev/tty → --yes tier as send; REACT_AUDIT stderr line on every mutation; --remove is the undo",
+    "edit (lib/edit.js): chat.update on your own messages only (the author is checked against auth.test first); the current text is fetched and diffed before any prompt; the pre-edit text is written to data/edit-backups/<channel>-<ts>.json (mode 600, append-only revisions[] chain) before the update; refuses when files, attachments, or non-text blocks would be dropped unless --allow-lossy; confirmEditOnTty() on /dev/tty or --yes; EDIT_AUDIT line on every mutation",
+    "invite (lib/invite.js): conversations.invite on an existing channel, one call per person, so partial success is reported and never rolled back; the preview states the channel's privacy (an unreadable conversations.info renders UNKNOWN and is treated as private) and names the history disclosure a private invite carries; every invitee is resolved through users.info and shown with their email; confirmInviteOnTty() on /dev/tty or --yes; already_in_channel counts as success; INVITE_AUDIT line per person",
+    "upload-file.mjs: resolves the recipient, previews, and refuses to deliver without --yes; there is no TTY prompt, so --yes alone delivers — confirm the file and the recipient with the user before passing it",
+    "create-channel (lib/create-channel.js): a channel name can never be reclaimed, so confirmCreateOnTty() reads /dev/tty and requires the operator to type the channel name back; there is no --yes and no bypass; without a TTY the command exits 2 and prints the staged command for a human to run; the name is validated before auth and the collision check is advisory only (Slack's name_taken is the arbiter)",
+    "Off-hours bulk gating (lib/safeguards.js enforceOffHours): my-messages, channel, mentions, reactions, threads and year-review are blocked Mon-Fri during SLACK_BUSINESS_HOURS (default 06-18) in SLACK_BUSINESS_TZ (default: this machine's zone) unless --force, which proceeds with a warning (SENSIBILITIES #4). One fail-closed exemption (channelReadExemption): `channel` bounded to one search page (--max-pages 1 or --max-results <= 100) of a private channel the caller is a member of, verified by conversations.info is_private and is_member; a public channel, unknown membership, unreadable info, or any multi-page shape keeps the gate",
+    "No delete, kick, archive, rename, or join verb exists; the undo for a membership change is a human in the Slack UI",
+    "The session cache ~/.slack-cli-auth.json is written mode 600 and tagged with its workspace host; a cache for a different workspace is ignored, not sent. ~/.config/slack-cli/config.json is refused when group/world readable. No verb prints the token (SENSIBILITIES #6, #11)",
+    "Per-process telemetry counters (lib/telemetry.js), a default per-request --delay on paginated pulls, and 429 / Retry-After honored with capped backoff"
+  ],
+  "verbs": [
+    { "name": "whoami", "tier": "read", "surface": "cli", "note": "prints the configured workspace before any network; the first thing to run" },
+    { "name": "probe", "tier": "read", "surface": "cli" },
+    { "name": "find-channels", "tier": "read", "surface": "cli", "note": "Edge API keyword discovery; the fallback where conversations.list is admin-restricted" },
+    { "name": "list-channels", "tier": "read", "surface": "cli", "note": "conversations.list; may return enterprise_is_restricted on Enterprise Grid" },
+    { "name": "channel-toc", "tier": "read", "surface": "cli", "note": "writes channel-catalog.json + CHANNELS.md locally (gitignored)" },
+    { "name": "thread", "tier": "read", "surface": "cli" },
+    { "name": "download", "tier": "read", "surface": "cli", "note": "read-only GET of attachment bytes to a local dir" },
+    { "name": "channel", "tier": "read", "surface": "cli", "note": "off-hours gate unless a single page of a private member channel; --force overrides" },
+    { "name": "my-messages", "tier": "read", "surface": "cli", "note": "off-hours gate; --force overrides" },
+    { "name": "mentions", "tier": "read", "surface": "cli", "note": "off-hours gate; --force overrides" },
+    { "name": "reactions", "tier": "read", "surface": "cli", "note": "off-hours gate; --force overrides" },
+    { "name": "threads", "tier": "read", "surface": "cli", "note": "off-hours gate; --force overrides" },
+    { "name": "year-review", "tier": "read", "surface": "cli", "note": "off-hours gate; --force overrides" },
+    { "name": "login", "tier": "read", "surface": "cli", "note": "re-authenticates the operator's own session; mutates only the local cache" },
+    { "name": "send", "tier": "write-gated", "gate": "tty", "surface": "cli", "note": "confirmOnTty() on /dev/tty, or --yes after a human approved the --dry-run preview" },
+    { "name": "react", "tier": "write-gated", "gate": "tty", "surface": "cli", "note": "confirmReactOnTty() on /dev/tty, or --yes after preview; reversible with --remove" },
+    { "name": "edit", "tier": "write-gated", "gate": "tty", "surface": "cli", "note": "confirmEditOnTty() on /dev/tty or --yes; diff + 600-mode backup before replace; refuses lossy updates without --allow-lossy" },
+    { "name": "invite", "tier": "write-gated", "gate": "tty", "surface": "cli", "note": "confirmInviteOnTty() on /dev/tty or --yes after preview; private-history disclosure named; each invitee's email shown" },
+    { "name": "upload-file.mjs", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "--yes only — previews without it, no TTY prompt" },
+    { "name": "create-channel", "tier": "write-gated", "gate": "typed-echo", "surface": "cli", "note": "confirmCreateOnTty(): type the channel name back at /dev/tty; no --yes, no bypass — agents get exit 2 and a staged command" },
+    { "name": "delete message", "tier": "never", "surface": "cli", "note": "no chat.delete verb exists; an accidental post is edited down, not removed" },
+    { "name": "kick / archive / rename / join", "tier": "never", "surface": "cli", "note": "no verb exists; undo is a human in the Slack UI" },
+    { "name": "read_slack_thread", "tier": "read", "surface": "mcp" },
+    { "name": "get_channel_messages", "tier": "read", "surface": "mcp" },
+    { "name": "search_slack_channel", "tier": "read", "surface": "mcp" },
+    { "name": "search_user_messages", "tier": "read", "surface": "mcp" },
+    { "name": "lookup_user", "tier": "read", "surface": "mcp" },
+    { "name": "list_my_channels", "tier": "read", "surface": "mcp", "note": "conversations.list; may return enterprise_is_restricted on Enterprise Grid" },
+    { "name": "search_mentions", "tier": "read", "surface": "mcp" }
+  ],
+  "mcp": {
+    "server_name": "slack",
+    "registration": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "{TOOLBELT}/tools/slack/server.js"
+      ]
+    }
+  },
+  "checks": [
+    { "use": "runtime.node", "min": "22.12.0" },
+    {
+      "use": "deps.npm_installed",
+      "severity": "warn",
+      "fix": "cd {TOOLBELT}/tools/slack && npm ci   (or: toolbelt setup slack) — the CLI and MCP server need these; the unit tests do not"
+    },
+    { "use": "system.chrome" },
+    {
+      "use": "files.env_set",
+      "name": "SLACK_WORKSPACE_URL",
+      "key_file": "~/.config/slack-cli/config.json",
+      "severity": "warn",
+      "label": "workspace configured (SLACK_WORKSPACE_URL, or a 600-mode ~/.config/slack-cli/config.json)",
+      "fix": "export SLACK_WORKSPACE_URL=https://yourco.slack.com/ — or: mkdir -p ~/.config/slack-cli && printf '{\"workspace_url\": \"https://yourco.slack.com/\"}\\n' > ~/.config/slack-cli/config.json && chmod 600 ~/.config/slack-cli/config.json"
+    },
+    {
+      "use": "auth.file_cache",
+      "path": "~/.slack-cli-auth.json",
+      "severity": "warn",
+      "fix": "node {TOOLBELT}/tools/slack/cli.js login — Chrome opens for your company's sign-in"
+    },
+    { "use": "mcp.registered", "name": "slack", "severity": "warn" },
+    { "use": "mcp.stdio_handshake", "timeout_ms": 20000, "severity": "warn" }
+  ],
+  "smoke_test": {
+    "command": "node cli.js --help >/dev/null && node test.js",
+    "expect": "after npm ci: help renders; node test.js passes with no network and no workspace configured (test.js alone needs no node_modules — only cli.js/server.js do)"
+  },
+  "do_not_vendor": [
+    "data/",
+    "scripts/channels.conf",
+    "channel-catalog.json",
+    "CHANNELS.md",
+    "node_modules/",
+    "*.log"
+  ],
+  "core": false,
+  "risk": {
+    "read_only": false,
+    "destructive": true,
+    "idempotent": false,
+    "open_world": false,
+    "worst_case": "a message posted, edited, or a channel created in your company's Slack under the operator's name; a channel name can never be reclaimed, which is why create-channel is typed-echo with no --yes"
+  },
+  "systems": [
+    {
+      "name": "Slack",
+      "read": "node cli.js channel <name-or-id> --max-pages 1",
+      "preferred": true
+    }
+  ]
+}

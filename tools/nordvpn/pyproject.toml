@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "nordvpn"
+version = "0.1.0"
+description = "CLI tool for controlling NordVPN via Tunnelblick on macOS"
+authors = ["Rob Gruhl"]
+readme = "README.md"
+packages = [{include = "nordvpn"}]
+
+[tool.poetry.dependencies]
+python = "^3.13"
+httpx = "^0.28"
+typer = {extras = ["all"], version = "^0.15"}
+pydantic = "^2.0"
+python-dotenv = "^1.0"
+rich = "^13.0"
+
+[tool.poetry.scripts]
+nordvpn = "nordvpn.__main__:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

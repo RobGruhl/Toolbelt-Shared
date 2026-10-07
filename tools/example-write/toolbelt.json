@@ -1,0 +1,75 @@
+{
+  "name": "example-write",
+  "aliases": ["exw"],
+  "kind": "tool",
+  "description": "The gated-write example: two local text files that exercise every write tier — a private notes file (loud, reversible, no gate), a simulated shared board (preview → --yes, or staged for `toolbelt approve`), and a destructive clear behind a typed-echo gate on /dev/tty (a --force that skips the word is honored only where /dev/tty opens)",
+  "hits": "a local notes file + a simulated shared board",
+  "surface": "CLI. Reads are free. `note add`/`note rm` touch only the operator's private file and run at once, printing their own undo. `board post` treats shared-board.txt as something other people see: at a terminal it previews and exits 0 until re-run with --yes; with no terminal (an agent) it stages the payload under ~/.local/share/exw/pending/ and reports `toolbelt approve example-write <code>`. `board clear` makes the operator type the word \"clear\" on /dev/tty; --force skips the word only where /dev/tty opens, never from a pipeline; there is no --yes. Every write prints an audit line to stderr and then re-reads the file and reports the diff.",
+  "readme_label": "`tools/example-write` (`exw`)",
+  "platforms": ["darwin", "win32"],
+  "origin": {
+    "vendored_at": "2026-08-22",
+    "note": "authored in this kit as the worked example of SENSIBILITIES #2. On win32 there is no /dev/tty: the typed-echo tier and approve degrade to refuse-and-tell (the file path to delete by hand, or the board post --yes command to type at a console); board post previews when stdin is a console and stages otherwise."
+  },
+  "runtime": {
+    "node": ">=18",
+    "package_manager": "none"
+  },
+  "entrypoints": {
+    "cli": "node exw.mjs",
+    "approve": "node exw.mjs approve"
+  },
+  "env": [
+    {
+      "name": "EXW_HOME",
+      "required": false,
+      "secret": false,
+      "description": "Where the two files and the pending/ staging dir live. Default ~/.local/share/exw. Tests point it at a temp dir."
+    }
+  ],
+  "auth": {
+    "principal": "none",
+    "flow": "none — local files under the operator's own home; no credential exists",
+    "note": "The staging queue ~/.local/share/exw/pending/ (dir 700, files 600, 15-minute expiry, single use) holds staged board posts awaiting terminal approval — payload text only, never a secret, so it is not an auth cache. Drop one with: toolbelt approve example-write --discard <code>"
+  },
+  "verbs": [
+    { "name": "list", "tier": "read", "surface": "cli" },
+    { "name": "show", "tier": "read", "surface": "cli" },
+    { "name": "note add", "tier": "write", "surface": "cli", "note": "private + reversible: loud flag, no gate — appends to the operator's own notes.txt and prints the exact `note rm <n>` that undoes it" },
+    { "name": "note rm", "tier": "write", "surface": "cli", "note": "private + reversible: loud flag, no gate — removes one line of notes.txt and prints the exact `note add` that restores it" },
+    { "name": "board post", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "shared: preview by default (exit 0, nothing written), --yes executes, non-TTY stages for `toolbelt approve example-write <code>` where a human types yes on /dev/tty; --stage forces staging from a terminal" },
+    { "name": "board clear", "tier": "write-gated", "gate": "typed-echo", "surface": "cli", "note": "destructive: the operator types the word \"clear\" on /dev/tty after seeing the line count; --force skips the word only where /dev/tty opens (from a pipeline: exit 4 with the one command to run); --yes is a usage error" },
+    { "name": "approve", "tier": "write-gated", "gate": "tty", "surface": "cli", "note": "what `toolbelt approve example-write` runs: shows the staged payload, takes a typed yes on /dev/tty, replays the exact board post in-process once, deletes the record; no terminal → refuse, never re-stage" }
+  ],
+  "safeguards": [
+    "Tiers are a table in the code (VERBS in exw.mjs) and the test suite asserts the manifest's verbs[] matches it, so the contract and the behaviour cannot drift apart silently",
+    "note add / note rm touch only ~/.local/share/exw/notes.txt, a private file; they run without a gate but never quietly — each prints the file, the line delta, and the exact command that undoes it",
+    "board post never writes on a bare invocation: at a terminal it prints the exact bytes that would land and the --yes re-run, then exits 0; --yes is honored because refusing a deliberate post only pushes the work to an unguarded path",
+    "board post with no controlling terminal and no --yes stages the payload to ~/.local/share/exw/pending/<code>.json (dir 700, file 600, O_EXCL, 6-char [a-z0-9] code, 15-minute expiry, pruned on every touch) and exits 3 with `toolbelt approve example-write <code>`; nothing is written until a human confirms",
+    "approve opens /dev/tty — never stdin — shows the full staged payload, requires a typed yes, replays the exact staged arguments in-process through a one-shot module-level approval that no env var, flag, or stdin can set, and deletes the record whether or not the write succeeded (single use); with no terminal it refuses (exit 4) and never re-stages or auto-approves",
+    "board clear is gated by a /dev/tty typed-echo: the operator sees the line count and types the word \"clear\" back — \"y\", \"yes\", \"Clear\" and Enter all abort; piping into stdin cannot satisfy it because the gate opens the controlling terminal directly; there is no --yes",
+    "--force on board clear skips the typed word and is honored only when /dev/tty can be opened (harm reduction: a deliberate human is never refused); from a pipeline it exits 4 with the one command a human should run, because a flag an agent could have supplied is not evidence a human meant it. The terminal test is about the harness, not the caller — a process that inherits the operator's terminal passes it — which is why CLAUDE.md forbids an agent to pass --force itself",
+    "On win32, where /dev/tty does not exist, the typed-echo and approve gates refuse and tell (the file path to delete by hand; the --yes command to type at a console) rather than accept a console stdin a spawner could feed; this is declared here and in CLAUDE.md, not hidden",
+    "Every prompt states what it does, why the gate exists, and what yes and no each mean; the default is always no and no never changes a file (SENSIBILITIES #2)",
+    "--explain on note add, note rm, board post and board clear prints the plan — file, line delta, tier, gate — and writes nothing (SENSIBILITIES #5)",
+    "Every write prints an audit line to stderr (timestamp, verb, target, byte and line delta) and then RE-READS the file from disk and reports the diff, marking RE-READ MISMATCH if the expected change is not there: a successful write call is a claim, the re-read is the evidence (SENSIBILITIES #7, #2)",
+    "Files are created 600 and the data dir 700 under the operator's home; the staged record holds the post text only — this tool has no credential and the staging code has no field for one (SENSIBILITIES #11)"
+  ],
+  "checks": [
+    { "use": "runtime.node", "min": "18" }
+  ],
+  "smoke_test": {
+    "command": "node exw.mjs list && node exw.mjs board post hello --explain && node --test test/exw.test.mjs",
+    "expect": "list renders both files (empty is fine); the --explain pre-flight prints the plan and writes nothing; unit tests green — tiering, preview, staging record format, typed-echo parsing, approve replay"
+  },
+  "risk": {
+    "read_only": false,
+    "destructive": true,
+    "idempotent": false,
+    "open_world": false,
+    "worst_case": "the two local files under ~/.local/share/exw are cleared — nothing outside the operator's home"
+  },
+  "systems": [
+    { "name": "Example board (local)", "read": "node exw.mjs list", "preferred": true }
+  ]
+}

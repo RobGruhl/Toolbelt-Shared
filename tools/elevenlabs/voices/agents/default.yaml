@@ -1,0 +1,6 @@
+id: default
+name: Agent Default
+description: Default voice for Claude Code agent narration
+voice_id: nPczCjzI2devNBz1zQrb  # Brian - Deep, Resonant
+model_id: eleven_flash_v2_5
+tags: []

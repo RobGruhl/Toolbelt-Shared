@@ -1,0 +1,18 @@
+# runtime logs and state — never committed
+runs/
+*.csv
+current-run
+*.pid
+
+# compiled menu-bar indicator binary (rebuilt by indicator/install.sh)
+indicator/HotBagIndicator
+
+# local tooling / scratch
+.oraclerc
+.claude/
+.DS_Store
+
+# belt: live state never lives in the tree (it is under ~/.local/state/hot-bag)
+pending/
+audit.log
+disablesleep.on

@@ -1,0 +1,74 @@
+{
+  "name": "caffeinate",
+  "aliases": ["caff"],
+  "kind": "tool",
+  "description": "macOS sleep-prevention CLI + sourceable shell lib over /usr/bin/caffeinate: read who holds power assertions; start/stop/run are preview-by-default --yes writes that touch only processes this tool started, every one timed out and audited",
+  "hits": "macOS power management (caffeinate / pmset, this machine only)",
+  "surface": "CLI `caff` + `lib/caffeinate.sh`. `status`/`assertions` are free. `start`, `stop`, `run` preview and exit 0 until re-run with `--yes` (flag tier: own process, reversible). Every `start` carries a timeout (default 1h, 8h code ceiling, no forever). `stop` signals only a PID recorded in its own registry that `ps` still reports as caffeinate; there is no stop-all/pkill verb. Audit line to stderr and data/audit.log on every mutation.",
+  "readme_label": "`tools/caffeinate` (`caff`)",
+  "platforms": ["darwin"],
+  "origin": {
+    "repo": "/Users/robgruhl/Projects/hello-caffeinate",
+    "vendored_at": "2026-08-22",
+    "note": "Local hello-* workshop with no commits and no remote (git init only), so there is no vendored_commit and bin/vendor.sh could not archive HEAD: copied by hand from the working tree — lib/caffeinate.sh, examples/01-04, docs/01-03, README.md, .gitignore (all untracked in the source). .DS_Store excluded. lib/caffeinate.sh is edited here: caff_stop_all (pkill caffeinate) removed, caff_stop refuses a PID that is not a caffeinate process, caff_is_caffeinate added. The CLI `caff`, the tests and this manifest are authored in the belt."
+  },
+  "runtime": {
+    "package_manager": "none"
+  },
+  "entrypoints": {
+    "cli": "./caff"
+  },
+  "env": [
+    {
+      "name": "CAFF_HOME",
+      "required": false,
+      "secret": false,
+      "description": "Where the PID registry (pids) and audit.log live. Default: <tool dir>/data (gitignored). Tests point it at a temp dir."
+    }
+  ],
+  "auth": {
+    "principal": "none",
+    "flow": "none — /usr/bin/caffeinate and pmset run as the operator on the local machine; no credential exists and nothing leaves the host"
+  },
+  "safeguards": [
+    "Read-first: status and assertions are pgrep/pmset reads and change nothing; they are the only verbs without a flag (SENSIBILITIES #1)",
+    "start, stop and run preview by default — cmd_start/cmd_stop/cmd_run in caff print the exact caffeinate invocation and exit 0 — and execute only with --yes, which is always honored (flag tier: the operator's own process on the operator's own machine, reversible with one stop) (SENSIBILITIES #2)",
+    "Every start expires: DEFAULT_TIMEOUT_S=3600 and MAX_TIMEOUT_S=28800 are code constants in caff; --timeout 0/forever is refused and a value past the ceiling exits 2 naming the constant (SENSIBILITIES #3)",
+    "Own-process only: cmd_stop signals a PID only if it is in data/pids (written by this tool's start) AND caff_is_caffeinate (lib/caffeinate.sh) confirms ps reports it as caffeinate; a foreign or reused PID is refused with exit 1. caff_stop_all / pkill caffeinate was removed from the lib and no verb exposes it — a caffeinate another session holds is not this tool's to kill",
+    "Audit line [caff audit] with timestamp, verb and target on every start/stop/run, to stderr and to data/audit.log (mode 600); after a start the tool re-reads pmset -g assertions and reports whether the new PID holds an assertion (SENSIBILITIES #7, #2)",
+    "No credential, no network, no host but this one; data/ holds PIDs and audit lines only (SENSIBILITIES #11)"
+  ],
+  "verbs": [
+    { "name": "status", "tier": "read", "surface": "cli", "note": "every caffeinate PID on the machine, which of them this tool started, the pmset assertion lines" },
+    { "name": "assertions", "tier": "read", "surface": "cli", "note": "pmset -g assertions verbatim" },
+    { "name": "start", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "preview → --yes; background caffeinate with a mandatory timeout (default 1h, ceiling 8h); prints the `caff stop <pid> --yes` undo" },
+    { "name": "stop", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "preview → --yes; only a PID this tool started and ps still shows as caffeinate; --mine stops all of those" },
+    { "name": "run", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "preview → --yes; caffeinate wraps the command so the assertion ends with it; the command itself is whatever the caller passes" },
+    { "name": "stop-all / pkill caffeinate", "tier": "never", "surface": "cli", "note": "removed from lib/caffeinate.sh; no verb signals a process this tool did not start" }
+  ],
+  "checks": [
+    { "use": "files.exists", "path": "/usr/bin/caffeinate", "label": "/usr/bin/caffeinate present (ships with macOS)" },
+    { "use": "files.exists", "path": "/usr/bin/pmset", "label": "/usr/bin/pmset present (ships with macOS)" }
+  ],
+  "smoke_test": {
+    "command": "./caff status >/dev/null && ./caff start --explain >/dev/null && bash test/caff.test.sh",
+    "expect": "status reads pgrep/pmset; start --explain previews and starts nothing; tests green — no test passes --yes to start or run, so no assertion is ever held; the caffeinate process set is asserted unchanged"
+  },
+  "do_not_vendor": [
+    "data/",
+    ".DS_Store",
+    "*.log",
+    "output/",
+    "tmp/"
+  ],
+  "risk": {
+    "read_only": false,
+    "destructive": false,
+    "idempotent": false,
+    "open_world": false,
+    "worst_case": "this Mac stays awake for up to 8 hours (the code ceiling) under an assertion the operator forgot, or a command the caller named runs under `caff run --yes`; nothing leaves the host and no process this tool did not start is ever signalled"
+  },
+  "systems": [
+    { "name": "macOS power management (caffeinate / pmset)", "read": "./caff status", "preferred": true }
+  ]
+}

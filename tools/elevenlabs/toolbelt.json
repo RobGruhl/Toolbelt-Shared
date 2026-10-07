@@ -1,0 +1,149 @@
+{
+  "name": "elevenlabs",
+  "aliases": ["agent-voice"],
+  "kind": "tool",
+  "description": "ElevenLabs TTS for Claude Code: a localhost voice server, a CLI (speak/status/voices), and a Stop hook that narrates each turn's summary; paid calls ceilinged in code and audited with the character count, voice creation behind --yes; plus Eleven Music composition (`music`, paid, --yes)",
+  "hits": "ElevenLabs (TTS API, your own account)",
+  "surface": "CLI + a 127.0.0.1 HTTP server. `speak` is paid per character: refused above MAX_CHARS=1000 (code constant, server-side 422), `--yes` above 400 chars, every TTS call writes an audit line with the char count to stderr and ~/.local/state/agent-voice/audit.log. `voices` reads. `voice-add` creates a voice in the account only with `--yes`. `setup` writes ~/.claude (hook + settings) only with `--yes` after a preview; no delete verb exists; plus Eleven Music composition (`music`, paid, --yes)",
+  "readme_label": "`tools/elevenlabs` (`agent-voice`)",
+  "platforms": ["darwin"],
+  "origin": {
+    "repo": "https://github.com/RobGruhl/hello-elevenlabs.git",
+    "vendored_commit": "1695960",
+    "vendored_at": "2026-08-22",
+    "note": "source tree was dirty at copy time; only committed files were taken. Dropped on vendor: .claude/ (per-repo permissions and the /up-voice /down-voice commands — the router skill and `agent-voice status` replace them) and README.md (folded into CLAUDE.md). The untracked scripts/narrate_file.py (long-form MP3 narration) was not vendored"
+  },
+  "runtime": {
+    "python": ">=3.11",
+    "package_manager": "poetry"
+  },
+  "install": [
+    {
+      "run": "poetry install",
+      "description": "Create the in-project .venv and install the locked dependencies (elevenlabs SDK, FastAPI, uvicorn, click, httpx)",
+      "why": "the CLI and the server import these; poetry.toml pins the venv to tools/elevenlabs/.venv so nothing lands in a global site-packages",
+      "yes": ".venv/ is created inside tools/elevenlabs from poetry.lock; no call to ElevenLabs is made",
+      "no": "skipped; every agent-voice command fails on import until you run it"
+    },
+    {
+      "run": "poetry run agent-voice setup --yes",
+      "description": "Install the Claude Code Stop hook: copy scripts/agent-voice-hook.sh to ~/.claude/hooks/ and add a Stop entry to ~/.claude/settings.json",
+      "why": "this is the only thing in the tool that writes outside its own directory, so it is a declared step you confirm, not a side effect of install. The hook fires on every Stop in every session; with the server down it is a 2-second curl to nothing and exits 0",
+      "yes": "~/.claude/hooks/agent-voice-hook.sh is written (mode 755) and ~/.claude/settings.json gains one Stop hook entry (other hooks untouched; an existing entry is left as is). Undo: poetry run agent-voice setup --uninstall --yes",
+      "no": "nothing outside tools/elevenlabs changes; the CLI and server still work, nothing narrates automatically; the doctor keeps reporting the hook as not installed (warn)"
+    }
+  ],
+  "entrypoints": {
+    "cli": "poetry run agent-voice"
+  },
+  "env": [
+    {
+      "name": "ELEVENLABS_API_KEY",
+      "required": true,
+      "secret": true,
+      "description": "Your own ElevenLabs API key (elevenlabs.io > Profile > API keys). Read from the env, else the macOS Keychain item with service ELEVENLABS_API_KEY (or elevenlabs-api-key), else ~/.config/toolbelt/elevenlabs.env (mode 600 enforced); an in-tree .env is a deprecated fallback that warns on stderr"
+    },
+    {
+      "name": "AGENT_VOICE_PORT",
+      "required": false,
+      "secret": false,
+      "description": "Port the server binds on 127.0.0.1 and the CLI/hook send to (default 7888)"
+    },
+    {
+      "name": "AGENT_VOICE_AUDIT_LOG",
+      "required": false,
+      "secret": false,
+      "description": "Where the audit line is appended (default ~/.local/state/agent-voice/audit.log, mode 600)"
+    }
+  ],
+  "auth": {
+    "principal": "user",
+    "flow": "A personal ElevenLabs API key, billed to the operator's own account; resolved by get_api_key() in agent_voice/config.py and never printed, logged or placed on argv",
+    "login": "security add-generic-password -s ELEVENLABS_API_KEY -a \"$USER\" -w   (then paste the key at the prompt)",
+    "identity": "poetry run agent-voice status",
+    "caches": [
+      {
+        "path": "Keychain: ELEVENLABS_API_KEY, else elevenlabs-api-key",
+        "class": "static",
+        "store": "keychain",
+        "note": "the preferred store: a generic password, account $USER; get_api_key() reads the canonical service name first, then the lowercase name older ElevenLabs projects on this Mac used",
+        "revoke": "Delete the key at elevenlabs.io > Profile > API keys; security delete-generic-password -s ELEVENLABS_API_KEY (or -s elevenlabs-api-key)"
+      },
+      {
+        "path": "~/.config/toolbelt/elevenlabs.env",
+        "class": "static",
+        "store": "file",
+        "note": "optional 600-mode dotenv file holding ELEVENLABS_API_KEY; refused when group/world readable. The Keychain item is the preferred store",
+        "revoke": "Delete the key at elevenlabs.io > Profile > API keys; security delete-generic-password -s ELEVENLABS_API_KEY"
+      }
+    ]
+  },
+  "safeguards": [
+    "Paid-call ceiling in code: MAX_CHARS=1000 in agent_voice/config.py (mirrored in models.py, asserted equal by the tests). SpeakRequest refuses a longer body with HTTP 422 before any TTS call, speaker.py re-checks it, and the CLI exits 2 naming the constant. Raising it is a diff (SENSIBILITIES #3)",
+    "Bulk-spend guard at the CLI: `speak` above CONFIRM_CHARS=400 needs --yes (cli.py speak); --yes is always honored, so a deliberate narration is never refused (SENSIBILITIES #2 flag tier)",
+    "Audit line on every paid call and every write: audit() in agent_voice/audit.py prints `[agent-voice audit] <ts> verb=speak agent= voice= model= chars=N` to stderr and appends it to ~/.local/state/agent-voice/audit.log (dir 700, file 600); voice-add and setup audit the same way. Never the key, never the full text (SENSIBILITIES #7)",
+    "Pre-flight: `speak --dry-run` and `voice-add --dry-run` print the plan (chars, voice, model, bytes) and make no call (SENSIBILITIES #5)",
+    "voice-add creates a voice only with --yes (cli.py voice_add: without it the plan prints and the command exits 2); after the create it re-reads the voice by id and reports verified true/false (SENSIBILITIES #2 read-back)",
+    "setup is the only code path that writes outside the tool dir (hook_install.apply); the CLI reaches it only with --yes after printing the exact settings entry and the script action, and the `toolbelt setup elevenlabs` install step is that same command, confirmed at a terminal. --uninstall --yes is the undo",
+    "The server binds 127.0.0.1 only (server.py main) — the hook and CLI are its only intended clients; the Stop hook sends at most 200 characters (scripts/agent-voice-hook.sh) and always exits 0",
+    "No delete verb: voices are removed in the ElevenLabs UI; the SDK's voices.delete is not wired",
+    "The key is resolved by get_api_key() from $ELEVENLABS_API_KEY, the Keychain, or a 600-mode file; a group/world-readable key file is refused, and `status` reports only the key's source (SENSIBILITIES #6, #11)",
+    "Music ceiling in code: MAX_MUSIC_SECONDS=120 in agent_voice/config.py; `music` previews its plan (model, length, instrumental, output path, key source) and composes only with --yes, writes one file inside --out with O_EXCL, and audits the usage-counter delta as the credits charged (SENSIBILITIES #3, #5, #7)"
+  ],
+  "verbs": [
+    { "name": "status", "tier": "read", "surface": "cli", "note": "server health, key source (never the key), ffplay, hook state; exit 1 when the server is down" },
+    { "name": "voices", "tier": "read", "surface": "cli", "note": "lists the account's voices via the API; --limit ceiling 100" },
+    { "name": "serve", "tier": "read", "surface": "cli", "note": "starts the 127.0.0.1 server; it spends only per /speak request, each ceilinged at MAX_CHARS and audited" },
+    { "name": "stop", "tier": "read", "surface": "cli", "note": "halts playback on the local server" },
+    { "name": "speak", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "paid per character, private account: refused above MAX_CHARS=1000; --yes above CONFIRM_CHARS=400; --dry-run previews; audit line on every call" },
+    { "name": "voice-add", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "creates an instant voice clone in your account: --yes required, --dry-run previews, read-back after create; undo in the ElevenLabs UI" },
+    { "name": "setup", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "writes ~/.claude/hooks/agent-voice-hook.sh and a Stop entry in ~/.claude/settings.json (or ./.claude with --project): previews, --yes writes, --uninstall --yes reverts" },
+    { "name": "music", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "Eleven Music compose (music_v2_5), paid by track length on your plan: previews without --yes (exit 2), refused above MAX_MUSIC_SECONDS=120, instrumental unless --vocals, one .mp3 inside --out, never overwrites; audit line with the credits the account counter moved" },
+    { "name": "voice delete / edit / share", "tier": "never", "surface": "cli", "note": "in the SDK; the belt exposes no path" }
+  ],
+  "risk": {
+    "read_only": false,
+    "destructive": false,
+    "idempotent": false,
+    "open_world": false,
+    "worst_case": "ElevenLabs characters billed to the operator's own account — at most MAX_CHARS=1000 per request, each audited — or up to MAX_MUSIC_SECONDS=120 of composed music per call, or a voice added to their account; nothing shared, nothing deleted"
+  },
+  "systems": [
+    { "name": "ElevenLabs", "read": "poetry run agent-voice status", "preferred": true }
+  ],
+  "checks": [
+    { "use": "runtime.python", "min": "3.11" },
+    { "use": "runtime.poetry" },
+    { "use": "deps.poetry_env_ready" },
+    { "use": "deps.python_import", "module": "agent_voice.cli" },
+    { "use": "system.ffmpeg", "label": "ffmpeg installed (ffplay plays the PCM stream)" },
+    {
+      "use": "secrets.keychain_item",
+      "services": ["ELEVENLABS_API_KEY", "elevenlabs-api-key"],
+      "severity": "warn",
+      "label": "ElevenLabs key in the Keychain (preferred store)",
+      "fix": "security add-generic-password -s ELEVENLABS_API_KEY -a \"$USER\" -w   — or export ELEVENLABS_API_KEY, or write it to ~/.config/toolbelt/elevenlabs.env (chmod 600)"
+    },
+    {
+      "use": "files.env_set",
+      "name": "ELEVENLABS_API_KEY",
+      "key_file": "~/.config/toolbelt/elevenlabs.env",
+      "severity": "warn",
+      "label": "ElevenLabs key in env or the 600-mode file (fallbacks to the Keychain)",
+      "fix": "Only needed if the Keychain check above fails: export ELEVENLABS_API_KEY or write ~/.config/toolbelt/elevenlabs.env (chmod 600)"
+    },
+    { "use": "custom", "script": "checks/hook-installed.mjs", "label": "Claude Code Stop hook installed and current" }
+  ],
+  "smoke_test": {
+    "command": "poetry run agent-voice speak 'smoke test' --dry-run >/dev/null && poetry run agent-voice setup >/dev/null && poetry run python -m unittest discover -s tests",
+    "expect": "after poetry install: the speak pre-flight prints its plan with no server and no key; setup previews and writes nothing; unit tests green (ceilings, --yes gates, hook install plan/apply in a temp dir, audit line format and 600 mode, loose key file refused) — no network, no credential"
+  },
+  "do_not_vendor": [
+    ".env",
+    ".venv/",
+    "__pycache__/",
+    "*.mp3",
+    "*.wav"
+  ],
+  "core": false
+}

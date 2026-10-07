@@ -1,0 +1,87 @@
+{
+  "name": "example-mcp",
+  "kind": "connector",
+  "description": "Template connector for a hosted (remote) MCP server: registration, a reachability line, and the verb tiers an agent honors. Copy this directory, rename it, replace the placeholder URL, and list the server's real tools under verbs[]",
+  "hits": "<Your hosted MCP>",
+  "surface": "registration only (`toolbelt register example-mcp`, `--write` to merge into ~/.claude.json) — the server's tools appear in-session as mcp__example-mcp__<tool>; no belt code, no belt write path",
+  "platforms": [
+    "darwin",
+    "win32"
+  ],
+  "origin": {
+    "note": "template authored in this kit; no code vendored. For a real connector, put the vendor's docs or repo URL in origin.repo"
+  },
+  "auth": {
+    "principal": "user",
+    "flow": "the MCP's own OAuth or device flow, driven by the MCP client at registration and first use; the server applies the operator's own identity and role to every call. The belt holds no credential",
+    "login": "toolbelt register example-mcp --write   (interactive; the client completes the server's OAuth on first use)",
+    "caches": [],
+    "note": "Nothing is cached in this repo or by the belt. If the client stores the grant somewhere revocable, record the path, class, store, and revoke step here as an auth.caches[] entry so `toolbelt auth` can see it"
+  },
+  "verbs": [
+    {
+      "name": "search",
+      "tier": "read",
+      "surface": "mcp",
+      "note": "template — replace with the server's real read tools; every read-tier mcp verb becomes an allow rule in the offered permission profile"
+    },
+    {
+      "name": "get_item",
+      "tier": "read",
+      "surface": "mcp"
+    },
+    {
+      "name": "create_item",
+      "tier": "write",
+      "surface": "mcp",
+      "note": "runs under the operator's own grant at the hosted service with no belt gate (a connector has no code to gate in); the contract is the gate — preview the payload, get the human's explicit yes, run, re-read. Named on every doctor run by repo-integrity until a gated path replaces it"
+    },
+    {
+      "name": "delete_item",
+      "tier": "never",
+      "surface": "mcp",
+      "note": "irreversible at the service; denied in the offered permission profile, done in the vendor's UI by a human"
+    }
+  ],
+  "risk": {
+    "read_only": false,
+    "destructive": false,
+    "idempotent": false,
+    "open_world": false,
+    "worst_case": "create_item runs under the operator's own grant at the hosted server with no belt gate — the belt contributes registration and the tier list only; delete_item is tiered never and denied, so no reachable verb destroys data"
+  },
+  "systems": [
+    {
+      "name": "<Your hosted MCP>",
+      "read": "bin/toolbelt register example-mcp",
+      "preferred": true
+    }
+  ],
+  "safeguards": [
+    "No local gate is claimed: the belt ships no code here, so it cannot enforce one. Whatever the hosted server lets the operator do, it does under the operator's own identity (SENSIBILITIES #13); the belt's contribution is registration, the verb tiers, and the permission profile derived from them (SENSIBILITIES #2).",
+    "Tiers are data, not prose: read verbs become allow rules, never verbs become deny rules in the offered profile, and an ungated write is named on every doctor run so it is never silently green.",
+    "The placeholder URL stays visibly fake until replaced; `mcp.registered` and `mcp.http_reachable` warn rather than fail so a fresh kit passes its doctor while still pointing at the gap."
+  ],
+  "mcp": {
+    "server_name": "example-mcp",
+    "registration": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp"
+    },
+    "note": "PLACEHOLDER URL — replace with your server's MCP endpoint before `toolbelt register example-mcp --write`. For a stdio server use {\"type\": \"stdio\", \"command\": \"...\", \"args\": [\"{TOOLBELT}/...\"], \"env\": {}} instead; {TOOLBELT} and ~ are expanded at register time"
+  },
+  "checks": [
+    {
+      "use": "mcp.http_reachable",
+      "url": "https://mcp.example.com/mcp",
+      "severity": "warn",
+      "fix": "Replace the placeholder url in connectors/example-mcp/toolbelt.json (mcp.registration.url and this check) with your server's endpoint; if the real endpoint is unreachable, connect your corporate VPN/ZTNA client"
+    },
+    {
+      "use": "mcp.registered",
+      "name": "example-mcp",
+      "severity": "warn",
+      "fix": "Optional — register with: toolbelt register example-mcp --write   (after replacing the placeholder url)"
+    }
+  ]
+}

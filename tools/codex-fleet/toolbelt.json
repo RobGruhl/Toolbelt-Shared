@@ -1,0 +1,125 @@
+{
+  "name": "codex-fleet",
+  "kind": "tool",
+  "description": "Fan out parallel Codex (GPT-5.6 Luna) workers to run tests, verify diffs, hunt flakes or sweep checks; read-only sandbox by default, widened modes (-w, -s workspace-write, --net) preview until --yes, every fleet audited",
+  "hits": "OpenAI Codex CLI (ChatGPT plan, or the operator's OPENAI_API_KEY with --api)",
+  "surface": "bash CLI. Default fleets run workers in Codex's read-only sandbox and bill the ChatGPT plan; `--explain` prints the plan and launches nothing; `-w` / `-s workspace-write` / `-s danger-full-access` / `--net` preview and exit 0 until re-run with `--yes`; `--api` is the loud flag for metered billing; MAX_JOBS=50 and MAX_CONCURRENCY=16 are code constants; an audit line per fleet to stderr and data/audit.log",
+  "readme_label": "`tools/codex-fleet` (`codex-fleet`)",
+  "platforms": ["darwin"],
+  "origin": {
+    "repo": "/Users/robgruhl/Projects/codex",
+    "vendored_commit": "1bc0cbd",
+    "vendored_at": "2026-08-22",
+    "note": "local-only repo, no remote. report.html (a generated Artifact page) was dropped; the untracked, empty skills/test-fleet/ became docs/test-fleet.md. The --yes gate, --explain, the ceilings and the audit line are belt additions — the origin's script launches any mode at once."
+  },
+  "runtime": {
+    "package_manager": "none"
+  },
+  "install": [
+    {
+      "action": "symlink",
+      "from": "/opt/homebrew/bin/codex-fleet",
+      "to": "{TOOLBELT}/tools/codex-fleet/bin/codex-fleet",
+      "description": "Put codex-fleet on PATH by linking the brew bin dir at the belt's copy",
+      "why": "~/.claude/CLAUDE.md and the autoMode rules in ~/.claude/settings.json name `codex-fleet` bare; the link is what makes that name resolve to the gated belt copy instead of the origin repo's ungated one",
+      "yes": "/opt/homebrew/bin/codex-fleet -> {TOOLBELT}/tools/codex-fleet/bin/codex-fleet; a link at the old target is replaced, a real file is renamed to codex-fleet.pre-toolbelt",
+      "no": "nothing changes; `codex-fleet` keeps resolving to wherever it does now (the origin repo's copy, which has no --yes gate), and the doctor keeps warning"
+    }
+  ],
+  "entrypoints": {
+    "cli": "bin/codex-fleet"
+  },
+  "env": [
+    {
+      "name": "OPENAI_API_KEY",
+      "required": false,
+      "secret": true,
+      "description": "Only read under --api (metered billing). Stripped from every worker's environment otherwise, because codex prefers it over the plan login when present and would silently meter"
+    },
+    {
+      "name": "CODEX_FLEET_AUDIT",
+      "required": false,
+      "secret": false,
+      "description": "Where the audit log is appended. Default: data/audit.log inside the tool dir (gitignored, mode 600)"
+    }
+  ],
+  "auth": {
+    "principal": "user",
+    "flow": "The operator's own Codex CLI login (ChatGPT plan) in ~/.codex/auth.json; the tool adds no credential of its own. --api bills the operator's OPENAI_API_KEY instead",
+    "login": "codex login",
+    "identity": "codex login status",
+    "caches": [
+      {
+        "path": "~/.codex/auth.json",
+        "class": "derived",
+        "store": "vendor",
+        "refresh": "codex login",
+        "revoke": "codex logout",
+        "note": "owned and rotated by the Codex CLI; the fleet never reads it, only inherits it through `codex exec`"
+      }
+    ]
+  },
+  "safeguards": [
+    "Read-only by default: every worker runs `codex exec -s read-only --ephemeral` unless the operator widens it; a read-only worker cannot write anywhere, /tmp included (SENSIBILITIES #1, #3)",
+    "Flag gate on every widening (bin/codex-fleet, the TIER/WIDENED block): -w, -s workspace-write, -s danger-full-access and --net print the plan and exit 0 with nothing launched until the same command is re-run with --yes; the flag is always honored, so a deliberate operator is never refused (SENSIBILITIES #2)",
+    "--api is the loud flag for metered billing; without it OPENAI_API_KEY is removed from each worker's environment (`env -u`) so a fleet cannot meter by accident, and --api with an empty key exits 1 before launch (SENSIBILITIES #2, #3)",
+    "Ceilings are code constants in bin/codex-fleet: MAX_JOBS=50 per fleet and MAX_CONCURRENCY=16 workers; a fleet over either is refused with exit 2 naming the constant, never trimmed (SENSIBILITIES #3)",
+    "--explain pre-flight prints jobs, model, effort, sandbox, work root, results dir, billing, tier and the exact codex argv, then exits 0 without creating the results dir (SENSIBILITIES #5)",
+    "Audit line on every fleet — stderr and data/audit.log (dir and file created umask 077): timestamp, verb, phase, jobs, model, effort, sandbox, worktrees, net, billing, tier, whether --yes was passed, work root, results dir; the done line adds failures and total tokens (SENSIBILITIES #7)",
+    "Dependencies are checked after the gate and before any file is created: a missing codex or jq exits 1 naming the brew install; -w outside a git repository exits 2 (SENSIBILITIES #8)",
+    "Per-job timeout (default 900 s) kills the worker's whole process tree; worktrees are removed after each job whether it passed or not",
+    "No credential is read or written by this tool: workers inherit the Codex CLI's own login; the audit line never carries a key (SENSIBILITIES #11)"
+  ],
+  "verbs": [
+    { "name": "run (read-only sandbox)", "tier": "read", "surface": "cli", "note": "the default: workers cannot write; spends ChatGPT plan credits, which the audit line records per fleet; writes only .fleet/run-N under the work root the operator named" },
+    { "name": "--explain", "tier": "read", "surface": "cli", "note": "pre-flight; nothing launched, nothing created" },
+    { "name": "run -w (git worktrees)", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "previews without --yes; with it, each job gets a throwaway worktree of the work root that is removed afterwards — the main tree is never touched" },
+    { "name": "run -s workspace-write", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "previews without --yes; with it, workers may write under the work root (the operator's own checkout); pair with -w so writes land in worktrees" },
+    { "name": "run -s danger-full-access", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "previews without --yes; with it, workers run with no sandbox at all — the operator's whole home is in reach" },
+    { "name": "run --net", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "previews without --yes; with it, workspace-write workers get network egress (a read that sends data off-host)" },
+    { "name": "run --api", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "--api itself is the flag: metered billing against the operator's OPENAI_API_KEY instead of plan credits; audited as billing=api" },
+    { "name": "git commit / push from a worker", "tier": "never", "surface": "cli", "note": "workers run --ephemeral in a detached worktree or the read-only sandbox; they report diffs, they do not commit" }
+  ],
+  "risk": {
+    "read_only": false,
+    "destructive": true,
+    "idempotent": false,
+    "open_world": false,
+    "worst_case": "with --yes on -s danger-full-access, up to 50 LLM workers with no sandbox acting on the operator's machine as the operator; with --api, up to 50 metered Luna calls on the operator's key. Both need a typed --yes or --api; the default fleet can only read and spend plan credits"
+  },
+  "systems": [
+    { "name": "Codex test fleets (GPT-5.6 Luna)", "read": "bin/codex-fleet -n 1 -e low --explain \"Run 'true'. Acceptance check: exit status.\"", "preferred": true }
+  ],
+  "checks": [
+    { "use": "system.git" },
+    { "use": "custom", "script": "checks/codex-cli.mjs", "label": "Codex CLI runnable (brew cask)" },
+    { "use": "custom", "script": "checks/jq.mjs", "label": "jq present (rollup)" },
+    {
+      "use": "cli.authed",
+      "command": "codex login status",
+      "expect": "Logged in",
+      "severity": "warn",
+      "label": "Codex CLI logged in (ChatGPT plan)",
+      "fix": "codex login — sign in with the ChatGPT account whose plan the fleets bill"
+    },
+    { "use": "custom", "script": "checks/api-key-in-env.mjs", "label": "OPENAI_API_KEY not exported (plan billing is the default)" },
+    {
+      "use": "files.symlink_valid",
+      "path": "/opt/homebrew/bin/codex-fleet",
+      "target": "{TOOLBELT}/tools/codex-fleet/bin/codex-fleet",
+      "severity": "warn",
+      "label": "codex-fleet on PATH points at the belt copy",
+      "fix": "toolbelt setup codex-fleet — links /opt/homebrew/bin/codex-fleet at {TOOLBELT}/tools/codex-fleet/bin/codex-fleet (the origin repo's copy has no --yes gate)"
+    }
+  ],
+  "smoke_test": {
+    "command": "bash test/smoke.sh",
+    "expect": "offline contract tests green: help, --explain creates nothing, every widened mode previews without --yes, --yes is honored, ceilings refuse with exit 2 — no codex call, no spend"
+  },
+  "do_not_vendor": [
+    ".fleet/",
+    "data/",
+    "report.html"
+  ],
+  "core": false
+}

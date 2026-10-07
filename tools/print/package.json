@@ -1,0 +1,10 @@
+{
+  "name": "print",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "print — the Toolbelt front door for the CUPS printers on this Mac: preview-first sends, both queues, a one-line diagnosis, recovery verbs; no dependencies",
+  "bin": { "print": "./print.mjs" },
+  "engines": { "node": ">=18" },
+  "scripts": { "test": "node --test test/*.test.mjs" }
+}

@@ -1,0 +1,135 @@
+{
+  "name": "blender",
+  "aliases": ["blender-mcp"],
+  "kind": "connector",
+  "description": "Blender 3D scene creation, inspection, and manipulation via blender-mcp",
+  "hits": "Blender (3D modeling, scenes, rendering via blender-mcp)",
+  "surface": "MCP stdio server (`uvx blender-mcp`) connecting to Blender's socket on localhost:9876; scene/object inspection and viewport screenshots (read); arbitrary Blender Python execution and 3D modeling/assets (ungated write)",
+  "platforms": ["darwin", "win32"],
+  "origin": {
+    "repo": "https://github.com/ahujasid/blender-mcp.git",
+    "note": "the MCP server and Blender addon this connector configures"
+  },
+  "runtime": {
+    "python": ">=3.10",
+    "package_manager": "none"
+  },
+  "install": [
+    {
+      "run": "brew install --cask blender",
+      "description": "Install Blender 3D creation suite via Homebrew Cask",
+      "why": "Blender must be present locally to open scenes and run the MCP server socket",
+      "yes": "installs Blender.app to /Applications and links /opt/homebrew/bin/blender",
+      "no": "skipped; install Blender manually from blender.org"
+    },
+    {
+      "run": "uvx blender-mcp install-addon",
+      "description": "Install MCP for Blender addon into Blender user addons directory",
+      "why": "The addon provides the Blender-side socket server that blender-mcp communicates with",
+      "yes": "copies blender_mcp.py into ~/Library/Application Support/Blender/<version>/scripts/addons/",
+      "no": "skipped; install the addon manually in Blender preferences"
+    }
+  ],
+  "auth": {
+    "principal": "none",
+    "flow": "none — blender-mcp connects to Blender locally over loopback socket (localhost:9876); no cloud credentials required for local 3D operations",
+    "caches": []
+  },
+  "safeguards": [
+    "No local gate is claimed: the belt ships no code on the call path, so it cannot enforce one. The server runs locally and communicates with Blender over a local loopback socket (localhost:9876) (SENSIBILITIES #13); the belt's contribution is registration, verb tiers, and the contract in CLAUDE.md (SENSIBILITIES #2).",
+    "Local-first: scene reads and Python execution happen inside the local Blender process; external asset downloads and generations (Poly Haven, Sketchfab, Hyper3D) are explicit network operations."
+  ],
+  "verbs": [
+    { "name": "get_scene_info", "tier": "read", "surface": "mcp", "note": "returns objects, collections, camera, lights, materials, and units in the active Blender scene" },
+    { "name": "get_object_info", "tier": "read", "surface": "mcp", "note": "detailed properties of a specific object (mesh data, modifiers, material slots, transforms)" },
+    { "name": "get_viewport_screenshot", "tier": "read", "surface": "mcp", "note": "captures an image of the current 3D viewport" },
+    { "name": "get_addon_status", "tier": "read", "surface": "mcp", "note": "reports addon version, connection health, and protocol compatibility" },
+    { "name": "get_polyhaven_categories", "tier": "read", "surface": "mcp", "note": "lists categories of available assets on Poly Haven" },
+    { "name": "search_polyhaven_assets", "tier": "read", "surface": "mcp", "note": "searches textures, models, or HDRIs on Poly Haven" },
+    { "name": "get_polyhaven_status", "tier": "read", "surface": "mcp", "note": "checks connectivity to Poly Haven" },
+    { "name": "get_sketchfab_status", "tier": "read", "surface": "mcp", "note": "checks Sketchfab API configuration and status" },
+    { "name": "search_sketchfab_models", "tier": "read", "surface": "mcp", "note": "searches downloadable 3D models on Sketchfab" },
+    { "name": "get_sketchfab_model_preview", "tier": "read", "surface": "mcp", "note": "fetches thumbnail/preview image for a Sketchfab model" },
+    { "name": "get_polypizza_status", "tier": "read", "surface": "mcp", "note": "checks connectivity to Poly Pizza" },
+    { "name": "search_polypizza_models", "tier": "read", "surface": "mcp", "note": "searches low-poly models on Poly Pizza" },
+    { "name": "get_hyper3d_status", "tier": "read", "surface": "mcp", "note": "checks Hyper3D API key configuration" },
+    { "name": "poll_rodin_job_status", "tier": "read", "surface": "mcp", "note": "checks status of an in-progress Hyper3D Rodin generation job" },
+    { "name": "get_hunyuan3d_status", "tier": "read", "surface": "mcp", "note": "checks Hunyuan3D API key configuration" },
+    { "name": "poll_hunyuan_job_status", "tier": "read", "surface": "mcp", "note": "checks status of an in-progress Hunyuan3D generation job" },
+    { "name": "execute_blender_code", "tier": "write", "surface": "mcp", "note": "runs arbitrary Python code inside Blender with full bpy API access; ungated at the MCP layer — preview code before execution" },
+    { "name": "set_texture", "tier": "write", "surface": "mcp", "note": "assigns and configures material textures on target mesh objects" },
+    { "name": "download_polyhaven_asset", "tier": "write", "surface": "mcp", "note": "downloads CC0 asset from Poly Haven and imports it into the current scene" },
+    { "name": "download_sketchfab_model", "tier": "write", "surface": "mcp", "note": "downloads and imports a model from Sketchfab into the current scene" },
+    { "name": "download_polypizza_model", "tier": "write", "surface": "mcp", "note": "downloads and imports a low-poly model from Poly Pizza" },
+    { "name": "generate_hyper3d_model_via_text", "tier": "write", "surface": "mcp", "note": "initiates a text-to-3D generation job on Hyper3D Rodin (paid API)" },
+    { "name": "generate_hyper3d_model_via_images", "tier": "write", "surface": "mcp", "note": "initiates an image-to-3D generation job on Hyper3D Rodin (paid API)" },
+    { "name": "generate_hunyuan3d_model", "tier": "write", "surface": "mcp", "note": "initiates a 3D generation job on Hunyuan3D (paid API)" },
+    { "name": "import_generated_asset", "tier": "write", "surface": "mcp", "note": "imports a finished Hyper3D generated asset into the scene" },
+    { "name": "import_generated_asset_hunyuan", "tier": "write", "surface": "mcp", "note": "imports a finished Hunyuan3D generated asset into the scene" },
+    { "name": "record_trajectory_feedback", "tier": "write", "surface": "mcp", "note": "records trajectory ratings and feedback" },
+    { "name": "disable_telemetry", "tier": "write", "surface": "mcp", "note": "turns off telemetry collection in blender-mcp" }
+  ],
+  "risk": {
+    "read_only": false,
+    "destructive": false,
+    "idempotent": false,
+    "open_world": false,
+    "worst_case": "arbitrary Python execution in the operator's active Blender scene alters or deletes open models/scenes without an automatic undo; nothing leaves the host unless external model generation APIs are explicitly called"
+  },
+  "systems": [
+    {
+      "name": "Blender",
+      "read": "mcp__blender__get_scene_info()",
+      "preferred": true
+    }
+  ],
+  "mcp": {
+    "server_name": "blender",
+    "registration": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "blender-mcp"
+      ],
+      "env": {
+        "BLENDER_HOST": "localhost",
+        "BLENDER_PORT": "9876"
+      }
+    }
+  },
+  "checks": [
+    {
+      "use": "cli.authed",
+      "command": "uvx --version",
+      "label": "uv present (uvx runs blender-mcp from PyPI; nothing installed globally)",
+      "fix": "brew install uv"
+    },
+    {
+      "use": "custom",
+      "script": "checks/blender-app.mjs",
+      "label": "Blender 3D application installed"
+    },
+    {
+      "use": "custom",
+      "script": "checks/addon.mjs",
+      "label": "MCP for Blender addon installed in Blender scripts/addons"
+    },
+    {
+      "use": "mcp.registered",
+      "name": "blender",
+      "severity": "warn",
+      "fix": "{TOOLBELT}/bin/toolbelt register blender --write   (interactive; then restart Claude Code)"
+    },
+    {
+      "use": "custom",
+      "script": "checks/socket.mjs",
+      "severity": "warn",
+      "label": "Blender MCP server reachable on localhost:9876 (requires Blender running with 'Start MCP Server')"
+    }
+  ],
+  "smoke_test": {
+    "command": "node checks/smoke.mjs",
+    "expect": "registration matches blender-mcp stdio configuration, all tools tiered with surface mcp, custom checks speak the doctor contract"
+  },
+  "core": false
+}

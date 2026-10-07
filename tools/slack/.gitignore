@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+
+# Auth cache (live xoxc token + session cookies) — lives in $HOME, never here,
+# but listed so an accidental copy into the tree is still ignored
+.slack-cli-auth.json
+
+# Chrome profile (SSO session) — same story
+.slack-cli/
+
+# Export output data, edit backups, bulk-pull output
+data/
+slack-review-*/
+
+# Channel config (carries your company's channel IDs)
+scripts/channels.conf
+
+# Channel catalog + ToC — regenerated locally via `node cli.js channel-toc`.
+# A point-in-time scrape of your workspace's channel metadata (private channel
+# names, free-text topics that can carry incidental PII).
+channel-catalog.json
+CHANNELS.md

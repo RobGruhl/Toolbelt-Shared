@@ -1,0 +1,63 @@
+# Environment
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Output files
+output/
+tmp/
+*.mp3
+*.wav
+*.ogg
+
+# OS
+.DS_Store
+
+# Cache
+.cache/
+.pytest_cache/
+
+# Coverage
+htmlcov/
+.coverage
+.coverage.*
+
+# mypy
+.mypy_cache/
+
+# Local notes (source-repo leftover; nothing here writes it)
+HISTORY.md
+
+# toolbelt: per-tool local state
+poetry.toml.local

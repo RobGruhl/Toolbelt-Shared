@@ -1,0 +1,17 @@
+{
+  "name": "perplexity",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "pplx — Perplexity Search API + Agent API client and CLI, vendored into the Toolbelt from hello-perplexity",
+  "bin": { "pplx": "./pplx.mjs" },
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "search": "node examples/01-basic-search.js",
+    "agent": "node examples/11-agent-claude.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7"
+  }
+}

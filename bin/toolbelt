@@ -1,0 +1,36 @@
+#!/bin/sh
+# toolbelt — level-0 bootstrap shim.
+# Finds a Node >=18 and execs the doctor. This is the only code that must run on a
+# bare machine, so it is POSIX sh with zero dependencies. See SENSIBILITIES.md #10:
+# the remedy for missing node is `brew install node` — never curl|bash.
+
+set -eu
+
+TOOLBELT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+NODE=""
+for candidate in node /opt/homebrew/bin/node /usr/local/bin/node; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    NODE=$(command -v "$candidate")
+    break
+  fi
+done
+
+if [ -z "$NODE" ]; then
+  echo "toolbelt: Node.js not found." >&2
+  echo "" >&2
+  echo "  Fix:  brew install node" >&2
+  echo "" >&2
+  echo "(Node >=18 is the only requirement to run the doctor itself.)" >&2
+  exit 1
+fi
+
+MAJOR=$("$NODE" -e 'process.stdout.write(String(process.versions.node.split(".")[0]))')
+if [ "$MAJOR" -lt 18 ]; then
+  echo "toolbelt: Node $("$NODE" --version) found at $NODE but >=18 is required." >&2
+  echo "" >&2
+  echo "  Fix:  brew install node" >&2
+  exit 1
+fi
+
+exec "$NODE" "$TOOLBELT_DIR/doctor/cli.mjs" "$@"
