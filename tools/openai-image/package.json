@@ -8,6 +8,6 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "openai": "^7.5.0"
+    "openai": "^7.27.0"
   }
 }
