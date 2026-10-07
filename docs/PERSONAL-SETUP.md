@@ -9,6 +9,9 @@ Several tools need a paid account of your own (image, voice, search, transcripti
 do not need them. Set up only the ones you use; the doctor reports the rest as not set up, which
 is fine.
 
+**Fastest route:** paste the prompt in [SETUP-WITH-CLAUDE.md](SETUP-WITH-CLAUDE.md) into Claude Code
+and it walks you through everything below, tool by tool.
+
 ## 1. Install the basics
 
 ```sh

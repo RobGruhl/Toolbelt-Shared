@@ -24,7 +24,8 @@ described too.
 ## Quickstart
 
 Setting this belt up on your own Mac for your own texts, mail and calendar? Follow
-[docs/PERSONAL-SETUP.md](docs/PERSONAL-SETUP.md) instead of this section.
+[docs/PERSONAL-SETUP.md](docs/PERSONAL-SETUP.md) instead of this section, or paste
+[docs/SETUP-WITH-CLAUDE.md](docs/SETUP-WITH-CLAUDE.md) into Claude Code and let it walk you through.
 
 Requirements: Node >= 18 (`brew install node` on macOS; `winget install OpenJS.NodeJS.LTS` on
 Windows, where every `./bin/toolbelt` below is `bin\toolbelt.ps1`). The doctor has no
