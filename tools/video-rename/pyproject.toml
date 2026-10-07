@@ -11,7 +11,7 @@ python = "^3.13"
 # Video decoding: PyAV (FFmpeg bindings). decord/eva-decord ship no Python 3.13 wheels.
 av = "^17.0.0"
 anthropic = "^0.80.0"
-pillow = "^11.0.0"
+pillow = ">=11,<13"
 python-slugify = "^8.0.4"
 typer = "^0.15.0"
 rich = "^13.9.0"
