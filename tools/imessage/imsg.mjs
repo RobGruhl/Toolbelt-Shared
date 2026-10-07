@@ -21,7 +21,7 @@ import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { attachmentsFor, directChatsFor, getChat, listChats, maxRowid, messagesAfter, messagesIn, openChatDb, searchMessages } from './lib/db.mjs';
+import { attachmentsFor, directChatsFor, getChat, listChats, maxRowid, messagesAfter, messagesIn, openChatDb, searchMessages, threadOf } from './lib/db.mjs';
 import { findPeople, handleKey, loadContacts, looksLikeHandle } from './lib/contacts.mjs';
 import { discardPending, listPending, loadPending, stageWrite, ttyDevice, typedEchoMatches, PENDING_TTL_S } from './lib/gate.mjs';
 import { explainOsascriptError, osascriptSend } from './lib/send.mjs';
@@ -44,6 +44,7 @@ export const WATCH_MIN_INTERVAL_S = 1;
 export const VERBS = {
   chats: { tier: 'read' },
   history: { tier: 'read' },
+  thread: { tier: 'read' },
   search: { tier: 'read' },
   whois: { tier: 'read' },
   watch: { tier: 'read' },
@@ -103,7 +104,7 @@ function nameFor(env, handle) {
 export function parseArgs(argv) {
   const flags = {};
   const positional = [];
-  const valued = new Set(['limit', 'since', 'chat', 'out', 'service', 'interval', 'for', 'discard']);
+  const valued = new Set(['limit', 'since', 'chat', 'out', 'service', 'interval', 'for', 'discard', 'after-rowid']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--') { positional.push(...argv.slice(i + 1)); break; }
@@ -126,6 +127,12 @@ export function parseSince(s, now) {
   if (m) return now - Number(m[1]) * { m: 60e3, h: 3600e3, d: 86400e3, w: 604800e3 }[m[2]];
   const t = Date.parse(s);
   return Number.isNaN(t) ? undefined : t;
+}
+
+/** --after-rowid: a non-negative integer ROWID watermark; null when absent, undefined when bad. */
+export function parseRowid(v) {
+  if (v === undefined || v === null) return null;
+  return /^\d+$/.test(String(v)) ? Number(v) : undefined;
 }
 
 export function parseLimit(v, max = LIMIT_MAX) {
@@ -156,9 +163,12 @@ export function renderMessage(m) {
   if (m.kind === 'reaction') body = `${who} ${m.text}`;
   else body = `${who}: ${m.text}`;
   const extras = [];
+  if (m.reply_to) extras.push(`[reply to ${m.reply_to}]`);
+  if (m.reacts_to) extras.push(`[on ${m.reacts_to}]`);
+  if (m.app) extras.push(`[app message: ${m.app.split(':').pop()}]`);
   for (const a of m.attachments ?? []) extras.push(`[attachment ${[a.name, a.mime, humanBytes(a.bytes)].filter(Boolean).join(', ')}]`);
-  if (m.edited) extras.push('[edited]');
-  if (m.unsent) extras.push('[unsent]');
+  if (m.edited) extras.push(m.edited_at ? `[edited ${localStamp(m.edited_at)}]` : '[edited]');
+  if (m.unsent) extras.push(m.unsent_at ? `[unsent ${localStamp(m.unsent_at)}]` : '[unsent]');
   if (m.from_me && m.error) extras.push(`[not delivered: error ${m.error}]`);
   return `[${localStamp(m.date)}] ${body}${extras.length ? ' ' + extras.join(' ') : ''}`;
 }
@@ -217,10 +227,24 @@ function cmdHistory(env, target, flags) {
   if (limit === undefined) return usage(env, '--limit takes a positive integer');
   const since = parseSince(flags.since, env.now());
   if (since === undefined) return usage(env, `--since takes an ISO date or a span like 7d, 12h, 90m (got ${JSON.stringify(flags.since)})`);
+  const afterRowid = parseRowid(flags['after-rowid']);
+  if (afterRowid === undefined) return usage(env, '--after-rowid takes a non-negative integer');
+  if (flags.changed && since === null) return usage(env, '--changed needs --since: it widens the window to edits and unsends inside it');
   const r = resolveTarget(env, flags.chat ? `chat:${flags.chat}` : target);
   if (r.error) { env.err(`${CLI}: ${r.error}`); return 2; }
-  const rows = messagesIn(db(env), r.chatIds, { limit, sinceMs: since }, names(env));
-  if (!flags.json) env.err(`── ${r.label} — ${rows.length} message(s)${since !== null ? ` since ${localStamp(new Date(since).toISOString())}` : ''}, newest ${limit} max`);
+  const rows = messagesIn(db(env), r.chatIds, { limit, sinceMs: since, changed: Boolean(flags.changed), afterRowid }, names(env));
+  if (!flags.json) env.err(`── ${r.label} — ${rows.length} message(s)${since !== null ? ` since ${localStamp(new Date(since).toISOString())}` : ''}${flags.changed ? ' (or edited/unsent since)' : ''}${afterRowid !== null ? ` after row ${afterRowid}` : ''}, newest ${limit} max`);
+  env.err(`newest row: ${rows.reduce((mx, m) => Math.max(mx, m.rowid), afterRowid ?? 0)} (pass as --after-rowid next time)`);
+  emit(env, flags, rows, renderMessage);
+  return 0;
+}
+
+function cmdThread(env, guid, flags) {
+  if (!guid) return usage(env, 'thread needs a message guid (the reply_to of a reply, or any message guid)');
+  const rows = threadOf(db(env), guid.trim(), names(env));
+  if (!rows.length) { env.err(`${CLI}: no message with guid ${guid} or replies to it`); return 1; }
+  const head = rows.find((m) => m.guid === guid.trim());
+  if (!flags.json) env.err(`── thread ${guid}${head ? '' : ' (the original message is not on this Mac)'} — ${rows.length} message(s)`);
   emit(env, flags, rows, renderMessage);
   return 0;
 }
@@ -311,13 +335,16 @@ function cmdExport(env, target, flags) {
     chatIds = r.chatIds;
     label = r.label;
   }
+  const afterRowid = parseRowid(flags['after-rowid']);
+  if (afterRowid === undefined) return usage(env, '--after-rowid takes a non-negative integer');
+  if (flags.changed && since === null) return usage(env, '--changed needs --since');
   const outPath = path.resolve(flags.out);
   if (flags.explain) {
     env.out(`would write up to ${limit} message(s) from ${label}${since !== null ? ` since ${new Date(since).toISOString()}` : ''} to ${display(outPath)} as JSONL (mode 600; refuses to overwrite)`);
     return 0;
   }
   if (existsSync(outPath)) { env.err(`${CLI}: ${display(outPath)} exists — export never overwrites; choose a new --out`); return 2; }
-  const rows = messagesIn(db(env), chatIds, { limit, sinceMs: since }, names(env));
+  const rows = messagesIn(db(env), chatIds, { limit, sinceMs: since, changed: Boolean(flags.changed), afterRowid }, names(env));
   mkdirSync(path.dirname(outPath), { recursive: true });
   const fd = openSync(outPath, FS.O_WRONLY | FS.O_CREAT | FS.O_EXCL, 0o600);
   try {
@@ -550,11 +577,14 @@ const HELP = `${CLI} — iMessage/SMS on this Mac: read the Messages database; s
 
 reads (free; chat.db opened read-only)
   ${CLI} chats [--limit N]                         recent conversations with ids
-  ${CLI} history <id|phone|email|name> [--limit N] [--since 7d|ISO]
+  ${CLI} history <id|phone|email|name> [--limit N] [--since 7d|ISO] [--changed] [--after-rowid N]
+      --changed       also old messages edited or unsent inside the --since window
+      --after-rowid   only rows written after row N (catches late-synced messages; stderr prints the newest row)
+  ${CLI} thread <guid>                             a message and every inline reply to it, any age
   ${CLI} search <text> [--chat <id|who>] [--since …] [--limit N]
   ${CLI} whois <phone|email|name>                  contact ↔ handles ↔ chats
   ${CLI} watch [<who>|--chat <id>] [--interval S] [--for S]   print new messages as they arrive
-  ${CLI} export <who>|--chat <id>|--all --out <file.jsonl> [--since …] [--limit N] [--explain]
+  ${CLI} export <who>|--chat <id>|--all --out <file.jsonl> [--since …] [--changed] [--after-rowid N] [--limit N] [--explain]
 
 write-gated (tty) — one message, as you
   ${CLI} send <phone|email|name> <text…>           preview, then type "send" at the terminal
@@ -593,6 +623,7 @@ export function main(argv, overrides = {}) {
     switch (verb) {
       case 'chats': return cmdChats(env, flags);
       case 'history': return cmdHistory(env, rest.join(' '), flags);
+      case 'thread': return cmdThread(env, rest.join(' '), flags);
       case 'search': return cmdSearch(env, rest.join(' '), flags);
       case 'whois': return cmdWhois(env, rest.join(' '), flags);
       case 'watch': return cmdWatch(env, rest.join(' '), flags);

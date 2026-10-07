@@ -1,12 +1,16 @@
 {
   "name": "imessage",
-  "aliases": ["imsg"],
+  "aliases": [
+    "imsg"
+  ],
   "kind": "tool",
   "description": "iMessage/SMS on this Mac: read the Messages database read-only (chats, history, search, whois, watch, JSONL export; attributedBody decoded, names from local Contacts); send one message at a time behind a /dev/tty gate — no terminal stages it for `toolbelt approve`, and every send is re-read from chat.db",
   "hits": "this Mac's Messages database (~/Library/Messages/chat.db) and local Contacts; Messages.app via AppleScript for send",
   "surface": "CLI. Reads open chat.db and the Contacts stores read-only (node:sqlite `readOnly`): `chats`, `history`, `search`, `whois`, `watch`, and `export` to a new 600-mode JSONL file. `send` previews the resolved recipient, service, prior history and text, then needs the word \"send\" typed at /dev/tty; `--yes` skips the word only where /dev/tty opens. With no terminal (an agent) the message is staged under ~/.local/share/imessage/pending/ and goes out only through `toolbelt approve imessage <code>`. After a send the tool re-reads chat.db until the outgoing row appears. No delete, edit, unsend, attachment or bulk-send verb exists.",
   "readme_label": "`tools/imessage` (`imsg`)",
-  "platforms": ["darwin"],
+  "platforms": [
+    "darwin"
+  ],
   "origin": {
     "vendored_at": "2026-09-30",
     "note": "authored in this belt. Reads the documented-by-use chat.db schema (message, handle, chat, chat_message_join, chat_handle_join, attachment) and the AddressBook-v22 Contacts stores; sends through the Messages AppleScript dictionary (`send … to chat id …` / `send … to participant … of account …`)."
@@ -20,9 +24,24 @@
     "approve": "node imsg.mjs approve"
   },
   "env": [
-    { "name": "IMSG_CHAT_DB", "required": false, "secret": false, "description": "Messages database to read. Default ~/Library/Messages/chat.db. Tests point it at a synthetic copy." },
-    { "name": "IMSG_CONTACTS_DIR", "required": false, "secret": false, "description": "Contacts root holding AddressBook-v22.abcddb and Sources/*/. Default ~/Library/Application Support/AddressBook." },
-    { "name": "IMSG_HOME", "required": false, "secret": false, "description": "Where pending/ (staged sends) and audit.log live. Default ~/.local/share/imessage." }
+    {
+      "name": "IMSG_CHAT_DB",
+      "required": false,
+      "secret": false,
+      "description": "Messages database to read. Default ~/Library/Messages/chat.db. Tests point it at a synthetic copy."
+    },
+    {
+      "name": "IMSG_CONTACTS_DIR",
+      "required": false,
+      "secret": false,
+      "description": "Contacts root holding AddressBook-v22.abcddb and Sources/*/. Default ~/Library/Application Support/AddressBook."
+    },
+    {
+      "name": "IMSG_HOME",
+      "required": false,
+      "secret": false,
+      "description": "Where pending/ (staged sends) and audit.log live. Default ~/.local/share/imessage."
+    }
   ],
   "auth": {
     "principal": "user",
@@ -30,18 +49,81 @@
     "note": "The staging queue ~/.local/share/imessage/pending/ (dir 700, files 600, 15-minute expiry, single use) holds a staged recipient and message text awaiting terminal approval — payload only, never a secret. Drop one with: toolbelt approve imessage --discard <code>"
   },
   "verbs": [
-    { "name": "chats", "tier": "read", "surface": "cli" },
-    { "name": "history", "tier": "read", "surface": "cli" },
-    { "name": "search", "tier": "read", "surface": "cli" },
-    { "name": "whois", "tier": "read", "surface": "cli" },
-    { "name": "watch", "tier": "read", "surface": "cli" },
-    { "name": "export", "tier": "read", "surface": "cli", "note": "writes only the new JSONL file the operator names with --out (O_EXCL, mode 600; never overwrites)" },
-    { "name": "send", "tier": "write-gated", "gate": "tty", "surface": "cli", "note": "goes out as the operator to a real person and cannot be recalled by this tool: preview, then the word \"send\" typed at /dev/tty; --yes skips the word only where /dev/tty opens; no terminal → staged for `toolbelt approve imessage <code>`, --yes included" },
-    { "name": "approve", "tier": "write-gated", "gate": "tty", "surface": "cli", "note": "what `toolbelt approve imessage` runs: re-resolves the staged send, shows the preview, requires the word \"send\" on /dev/tty, delivers once, deletes the record; no terminal → refuse (exit 4), record kept" },
-    { "name": "delete", "tier": "never", "surface": "cli", "note": "Messages can delete conversations; the belt exposes no path to it, and chat.db is never opened writable" },
-    { "name": "unsend", "tier": "never", "surface": "cli", "note": "edit/unsend exist in Messages.app only; the AppleScript dictionary has no verb for them and the belt adds none" },
-    { "name": "send-attachment", "tier": "never", "surface": "cli", "note": "text only: a file path in a send could leak any local file to a recipient" },
-    { "name": "send-many", "tier": "never", "surface": "cli", "note": "one recipient per call, one confirmation per message; no bulk or scheduled send" }
+    {
+      "name": "chats",
+      "tier": "read",
+      "surface": "cli"
+    },
+    {
+      "name": "history",
+      "tier": "read",
+      "surface": "cli",
+      "note": "--changed adds old messages edited/unsent inside --since; --after-rowid N is the late-sync watermark"
+    },
+    {
+      "name": "thread",
+      "tier": "read",
+      "note": "a message and every inline reply to it, any age — what a reply_to in a read window answers"
+    },
+    {
+      "name": "search",
+      "tier": "read",
+      "surface": "cli"
+    },
+    {
+      "name": "whois",
+      "tier": "read",
+      "surface": "cli"
+    },
+    {
+      "name": "watch",
+      "tier": "read",
+      "surface": "cli"
+    },
+    {
+      "name": "export",
+      "tier": "read",
+      "surface": "cli",
+      "note": "writes only the new JSONL file the operator names with --out (O_EXCL, mode 600; never overwrites)"
+    },
+    {
+      "name": "send",
+      "tier": "write-gated",
+      "gate": "tty",
+      "surface": "cli",
+      "note": "goes out as the operator to a real person and cannot be recalled by this tool: preview, then the word \"send\" typed at /dev/tty; --yes skips the word only where /dev/tty opens; no terminal → staged for `toolbelt approve imessage <code>`, --yes included"
+    },
+    {
+      "name": "approve",
+      "tier": "write-gated",
+      "gate": "tty",
+      "surface": "cli",
+      "note": "what `toolbelt approve imessage` runs: re-resolves the staged send, shows the preview, requires the word \"send\" on /dev/tty, delivers once, deletes the record; no terminal → refuse (exit 4), record kept"
+    },
+    {
+      "name": "delete",
+      "tier": "never",
+      "surface": "cli",
+      "note": "Messages can delete conversations; the belt exposes no path to it, and chat.db is never opened writable"
+    },
+    {
+      "name": "unsend",
+      "tier": "never",
+      "surface": "cli",
+      "note": "edit/unsend exist in Messages.app only; the AppleScript dictionary has no verb for them and the belt adds none"
+    },
+    {
+      "name": "send-attachment",
+      "tier": "never",
+      "surface": "cli",
+      "note": "text only: a file path in a send could leak any local file to a recipient"
+    },
+    {
+      "name": "send-many",
+      "tier": "never",
+      "surface": "cli",
+      "note": "one recipient per call, one confirmation per message; no bulk or scheduled send"
+    }
   ],
   "safeguards": [
     "Tiers are a table in the code (VERBS in imsg.mjs) and the test suite asserts the manifest's verbs[] matches it, so the contract and the behaviour cannot drift apart silently",
@@ -58,9 +140,20 @@
     "--explain on send and export prints the plan and changes nothing (SENSIBILITIES #5)"
   ],
   "checks": [
-    { "use": "runtime.node", "min": "24" },
-    { "use": "custom", "script": "checks/chat-db.mjs", "label": "chat.db readable (Full Disk Access)" },
-    { "use": "custom", "script": "checks/contacts.mjs", "label": "Contacts stores readable (names for handles)" }
+    {
+      "use": "runtime.node",
+      "min": "24"
+    },
+    {
+      "use": "custom",
+      "script": "checks/chat-db.mjs",
+      "label": "chat.db readable (Full Disk Access)"
+    },
+    {
+      "use": "custom",
+      "script": "checks/contacts.mjs",
+      "label": "Contacts stores readable (names for handles)"
+    }
   ],
   "smoke_test": {
     "command": "node --test test/imsg.test.mjs && node imsg.mjs chats --limit 1 --json > /dev/null && node imsg.mjs approve --list",
@@ -74,6 +167,10 @@
     "worst_case": "one message, previewed and confirmed with a typed word at the terminal, reaches the wrong person or says the wrong thing; this tool cannot recall it"
   },
   "systems": [
-    { "name": "iMessage / SMS (Messages)", "read": "node imsg.mjs chats --limit 10", "preferred": true }
+    {
+      "name": "iMessage / SMS (Messages)",
+      "read": "node imsg.mjs chats --limit 10",
+      "preferred": true
+    }
   ]
 }

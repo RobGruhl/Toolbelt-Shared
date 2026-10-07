@@ -45,7 +45,8 @@ function buildWorld() {
     CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, guid TEXT, chat_identifier TEXT, display_name TEXT, service_name TEXT, style INTEGER);
     CREATE TABLE message (ROWID INTEGER PRIMARY KEY, guid TEXT, text TEXT, attributedBody BLOB, date INTEGER, date_read INTEGER, date_delivered INTEGER,
       is_from_me INTEGER, is_sent INTEGER, is_delivered INTEGER, is_read INTEGER, error INTEGER, service TEXT, item_type INTEGER,
-      associated_message_type INTEGER, associated_message_emoji TEXT, cache_has_attachments INTEGER, date_edited INTEGER, date_retracted INTEGER, handle_id INTEGER);
+      associated_message_type INTEGER, associated_message_emoji TEXT, cache_has_attachments INTEGER, date_edited INTEGER, date_retracted INTEGER, handle_id INTEGER,
+      thread_originator_guid TEXT, associated_message_guid TEXT, balloon_bundle_id TEXT, group_title TEXT);
     CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER, message_date INTEGER);
     CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
     CREATE TABLE attachment (ROWID INTEGER PRIMARY KEY, transfer_name TEXT, filename TEXT, mime_type TEXT, total_bytes INTEGER);
@@ -378,4 +379,108 @@ test('manifest verbs[] matches the VERBS table in code', () => {
 
 test.after(() => {
   for (const d of readdirSync(tmpdir())) if (d.startsWith('imsg-test-')) rmSync(path.join(tmpdir(), d), { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------- group-chat edge cases
+
+/** Rows for the digest edge cases, appended to the world's chat.db: a group with an old
+ *  announcement, today's inline reply to it, an old message edited today, a tapback on the old
+ *  message, an SMS group with a fallback reaction, a rename, a poll, and a late-synced row. */
+function addEdgeRows(w) {
+  const db = new DatabaseSync(w.chatDb);
+  const ins = (sql, ...a) => db.prepare(sql).run(...a);
+  ins(`INSERT INTO chat VALUES (5, 'iMessage;+;chat950', 'chat950', 'Chapter', 'iMessage', 43), (6, 'SMS;+;chat951', 'chat951', NULL, 'SMS', 43)`);
+  ins(`INSERT INTO chat_handle_join VALUES (5,1),(5,3),(6,2),(6,3)`);
+  const row = (rowid, chat, cols) => {
+    const c = { text: null, date: at(0), handle_id: 1, service: 'iMessage', item_type: 0, associated_message_type: 0, ...cols };
+    const keys = Object.keys(c);
+    ins(`INSERT INTO message (ROWID, guid, is_from_me, ${keys.join(', ')}) VALUES (?, ?, 0, ${keys.map(() => '?').join(', ')})`, rowid, `E-${rowid}`, ...keys.map((k) => c[k]));
+    ins(`INSERT INTO chat_message_join VALUES (?, ?, ?)`, chat, rowid, c.date);
+  };
+  const DAY = 24 * 60;
+  row(101, 5, { text: 'formal is Friday at 8', date: at(-3 * DAY) });
+  row(102, 5, { text: 'wait it moved to Saturday', date: at(10), thread_originator_guid: 'E-101' });
+  row(103, 5, { text: 'dues due the 15th', date: at(-2 * DAY), date_edited: at(20) });
+  row(104, 5, { date: at(30), associated_message_type: 2000, associated_message_guid: 'p:0/E-101' });
+  row(105, 6, { text: 'Loved “see you at 7”', date: at(40), handle_id: 2, service: 'SMS' });
+  row(106, 6, { text: 'Loved the new place', date: at(41), handle_id: 2, service: 'iMessage' });
+  row(107, 5, { date: at(50), item_type: 2, group_title: 'Chapter 2026' });
+  row(108, 5, { date: at(55), balloon_bundle_id: 'com.apple.messages.MSMessageExtensionBalloonPlugin:0000000000:com.apple.messages.Polls' });
+  row(109, 5, { text: 'synced late from an old day', date: at(-5 * DAY) });
+  db.close();
+  return { day: DAY };
+}
+
+const NOW = T0 + 60 * 60_000; // an hour after T0: "the last hour" is the read window below
+
+test('a reply to an old message carries reply_to; thread fetches what it answers', () => {
+  const w = buildWorld();
+  addEdgeRows(w);
+  const r = run(w, ['history', '5', '--since', '1h', '--json'], { overrides: { now: () => NOW } });
+  assert.equal(r.code, 0);
+  const rows = r.outLines.map((l) => JSON.parse(l));
+  const reply = rows.find((m) => m.rowid === 102);
+  assert.equal(reply.reply_to, 'E-101');
+  assert.ok(!rows.some((m) => m.rowid === 101), 'the old original is outside the window');
+  const t = run(w, ['thread', 'E-101', '--json']);
+  assert.equal(t.code, 0);
+  assert.deepEqual(t.outLines.map((l) => JSON.parse(l).rowid), [101, 102]);
+});
+
+test('--changed adds an old message edited inside the window, with edited_at', () => {
+  const w = buildWorld();
+  addEdgeRows(w);
+  const plain = run(w, ['history', '5', '--since', '1h', '--json'], { overrides: { now: () => NOW } }).outLines.map((l) => JSON.parse(l));
+  assert.ok(!plain.some((m) => m.rowid === 103), 'without --changed the edit is invisible');
+  const r = run(w, ['history', '5', '--since', '1h', '--changed', '--json'], { overrides: { now: () => NOW } });
+  const edited = r.outLines.map((l) => JSON.parse(l)).find((m) => m.rowid === 103);
+  assert.equal(edited.edited, true);
+  assert.equal(edited.edited_at, new Date(T0 + 20 * 60_000).toISOString());
+  assert.equal(run(w, ['history', '5', '--changed']).code, 2, '--changed without --since is a usage error');
+});
+
+test('reactions name their target; SMS fallback tapbacks become reactions, iMessage text does not', () => {
+  const w = buildWorld();
+  addEdgeRows(w);
+  const rows = run(w, ['history', '5', '--since', '1h', '--json'], { overrides: { now: () => NOW } }).outLines.map((l) => JSON.parse(l));
+  const tap = rows.find((m) => m.rowid === 104);
+  assert.equal(tap.kind, 'reaction');
+  assert.equal(tap.reacts_to, 'E-101');
+  const sms = run(w, ['history', '6', '--json']).outLines.map((l) => JSON.parse(l));
+  assert.equal(sms.find((m) => m.rowid === 105).kind, 'reaction');
+  assert.equal(sms.find((m) => m.rowid === 105).reaction_fallback, true);
+  assert.equal(sms.find((m) => m.rowid === 106).kind, 'message');
+});
+
+test('renames read as events with the new name; app messages (polls) are flagged', () => {
+  const w = buildWorld();
+  addEdgeRows(w);
+  const rows = run(w, ['history', '5', '--since', '1h', '--json'], { overrides: { now: () => NOW } }).outLines.map((l) => JSON.parse(l));
+  const ren = rows.find((m) => m.rowid === 107);
+  assert.equal(ren.kind, 'event');
+  assert.equal(ren.text, 'named the conversation "Chapter 2026"');
+  assert.match(rows.find((m) => m.rowid === 108).app, /Polls$/);
+  const human = run(w, ['history', '5', '--since', '1h'], { overrides: { now: () => NOW } });
+  assert.match(human.out, /\[app message: com\.apple\.messages\.Polls\]/);
+  assert.match(human.out, /\[reply to E-101\]/);
+});
+
+test('--after-rowid catches a row synced late with an old date; stderr names the newest row', () => {
+  const w = buildWorld();
+  addEdgeRows(w);
+  const r = run(w, ['history', '5', '--after-rowid', '108', '--json']);
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.outLines.map((l) => JSON.parse(l).rowid), [109]);
+  assert.match(r.err, /newest row: 109/);
+  assert.equal(run(w, ['history', '5', '--after-rowid', 'x']).code, 2);
+});
+
+test('export honors --changed and --after-rowid', () => {
+  const w = buildWorld();
+  addEdgeRows(w);
+  const out = path.join(w.home, 'edge.jsonl');
+  const r = run(w, ['export', '--chat', '5', '--since', '1h', '--changed', '--out', out], { overrides: { now: () => NOW } });
+  assert.equal(r.code, 0);
+  const rows = readFileSync(out, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.ok(rows.some((m) => m.rowid === 103));
 });

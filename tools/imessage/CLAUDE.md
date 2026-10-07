@@ -12,6 +12,8 @@
 node imsg.mjs chats --limit 20                    # recent conversations: id, last activity, label
 node imsg.mjs history "Pat Example" --since 7d  # one person's 1:1 threads (iMessage + SMS merged)
 node imsg.mjs history 123 --limit 100             # a chat by id (groups included)
+node imsg.mjs history 123 --since 24h --changed     # plus old messages edited/unsent in the window
+node imsg.mjs thread <guid>                         # a message and every inline reply to it
 node imsg.mjs search "flight" --since 30d         # case-insensitive, newest first
 node imsg.mjs whois "+1 206 555 0100"             # handle ↔ contact ↔ chats
 node imsg.mjs watch --chat 123 --for 600          # print new messages as they arrive
@@ -66,6 +68,26 @@ Every send and staging appends one line to `~/.local/share/imessage/audit.log` (
 - **Most text is in `attributedBody`.** On current macOS `message.text` is NULL for nearly every row. The tool decodes the typedstream archive (`lib/typedstream.mjs`), anchoring on the `NSString` class entry, and strips U+FFFC attachment placeholders. A row with neither prints as empty text with its attachments.
 - **Reactions are rows.** A tapback is its own message (`kind: reaction`, e.g. "loved a message"). Group renames and membership changes are `kind: event`.
 - **Empty is unknown.** `search` reports how many rows it scanned and says when it hit the 250,000-row ceiling. No hits for a name can mean the contact is not in Contacts: try the number.
+- **Threads.** An inline reply carries `reply_to` (the guid it answers), and that message may be
+  days older than your window. `thread <guid>` returns the original and every reply. A reply's
+  meaning often depends on it ("moved to Saturday" is about what?).
+- **Changes land on old rows.** Editing or unsending a message updates that message's row; its
+  `date` stays the send time. `history --since 24h` alone misses an edit made today to
+  yesterday's message, so add `--changed` to include edits and unsends inside the window (the
+  row carries `edited_at` / `unsent_at`).
+- **Late rows.** A Mac that was asleep or offline syncs messages later with their original
+  dates, so a date window misses them. `--after-rowid N` reads rows written after row N whatever
+  their date. Stderr prints the newest row to pass next time.
+- **Reactions name their target** in `reacts_to`. An SMS phone (and some RCS paths) sends a
+  tapback as text, `Loved “…”`; on SMS/RCS rows that becomes `kind: reaction` with
+  `reaction_fallback: true`.
+- **Non-Apple members.** A group with an Android phone is an RCS or SMS chat (`service`), and
+  when someone joins or leaves, the same people can end up split across an iMessage chat and an
+  RCS/SMS chat. Treat chats with the same `participants` as one conversation. Senders without a
+  Contacts entry print as raw numbers, and one person can appear under several handles.
+- **Events and apps.** A rename is `kind: event` with `named the conversation "…"`. Polls,
+  payments and other iMessage apps carry `app` (the bundle id) and usually no text: say that one
+  exists and point to Messages, never guess what it contains.
 - **Times** are stored as nanoseconds since 2001-01-01 UTC. JSON carries UTC ISO; the human view prints local time.
 - **Attachments** are listed with their path under `~/Library/Messages/Attachments/`. The tool never opens, copies or sends them.
 

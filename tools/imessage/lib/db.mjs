@@ -41,7 +41,22 @@ export function openChatDb(file) {
 const MSG_COLS = `m.ROWID AS rowid, m.guid, m.text, m.attributedBody, m.date, m.date_read, m.date_delivered,
   m.is_from_me, m.is_sent, m.is_delivered, m.is_read, m.error, m.service, m.item_type,
   m.associated_message_type, m.associated_message_emoji, m.cache_has_attachments,
-  m.date_edited, m.date_retracted, h.id AS handle`;
+  m.date_edited, m.date_retracted, m.thread_originator_guid, m.associated_message_guid,
+  m.balloon_bundle_id, m.group_title, h.id AS handle`;
+
+/** associated_message_guid carries a part prefix ("p:0/…", "bp:…"); the bare guid is the target. */
+export function targetGuid(v) {
+  return v ? String(v).replace(/^(?:p:\d+\/|bp:)/, '') : null;
+}
+
+/**
+ * A tapback from an SMS/RCS phone arrives as text ("Loved “see you at 7”"), not as a reaction
+ * row. Recognised only on SMS/RCS rows, so an iMessage that happens to start with "Loved" stays
+ * a message.
+ */
+const FALLBACK_REACTION = /^(?:Loved|Liked|Disliked|Laughed at|Emphasized|Questioned|Reacted \S+ to) [“"].*[”"]$/su;
+
+const iso = (v) => { const ms = appleToMs(v); return ms === null ? null : new Date(ms).toISOString(); };
 
 /** Shape a raw message row into what every verb prints. `names` maps handleKey → contact name. */
 export function shapeMessage(row, names, chat = null) {
@@ -55,6 +70,12 @@ export function shapeMessage(row, names, chat = null) {
     text = `${verb}${emoji} a message`;
   } else if (Number(row.item_type ?? 0) !== 0) {
     kind = 'event';
+    if (row.group_title) text = `named the conversation "${row.group_title}"`;
+  }
+  let fallback = false;
+  if (kind === 'message' && /^(SMS|RCS)$/i.test(row.service ?? '') && text && FALLBACK_REACTION.test(text.trim())) {
+    kind = 'reaction';
+    fallback = true;
   }
   const fromMe = Number(row.is_from_me) === 1;
   const who = fromMe ? 'me' : (row.handle ? (names?.get(handleKey(row.handle)) ?? row.handle) : 'unknown');
@@ -74,8 +95,12 @@ export function shapeMessage(row, names, chat = null) {
     out.delivered = Number(row.is_delivered) === 1;
     if (Number(row.error)) out.error = Number(row.error);
   }
-  if (row.date_edited) out.edited = true;
-  if (row.date_retracted) out.unsent = true;
+  if (row.thread_originator_guid) out.reply_to = row.thread_originator_guid;
+  if (kind === 'reaction' && row.associated_message_guid) out.reacts_to = targetGuid(row.associated_message_guid);
+  if (fallback) out.reaction_fallback = true;
+  if (row.date_edited) { out.edited = true; out.edited_at = iso(row.date_edited); }
+  if (row.date_retracted) { out.unsent = true; out.unsent_at = iso(row.date_retracted); }
+  if (row.balloon_bundle_id) out.app = row.balloon_bundle_id;
   return out;
 }
 
@@ -147,15 +172,25 @@ export function directChatsFor(db, handle) {
   return rows.map((c) => ({ id: Number(c.id), guid: c.guid, service: c.service_name, messages: Number(c.n), last: c.last_date ? new Date(appleToMs(c.last_date)).toISOString() : null }));
 }
 
-/** Messages of the given chats (null = every chat), newest `limit` since `sinceMs`, oldest first. */
-export function messagesIn(db, chatIds, { limit, sinceMs = null }, names) {
+/**
+ * Messages of the given chats (null = every chat), newest `limit`, oldest first.
+ * `sinceMs` matches the send time; with `changed` it also matches an edit or unsend inside the
+ * window, so an old message changed today is not missed. `afterRowid` keeps only rows written to
+ * the database after that row — the watermark that catches messages synced late with an old date.
+ */
+export function messagesIn(db, chatIds, { limit, sinceMs = null, changed = false, afterRowid = null }, names) {
   if (chatIds !== null && !chatIds.length) return [];
   const since = sinceMs === null ? 0n : msToApple(sinceMs);
-  const where = chatIds === null ? '' : `cmj.chat_id IN (${chatIds.map(() => '?').join(',')}) AND`;
+  const conds = [];
+  const params = [];
+  if (chatIds !== null) { conds.push(`cmj.chat_id IN (${chatIds.map(() => '?').join(',')})`); params.push(...chatIds); }
+  if (changed && sinceMs !== null) { conds.push('(m.date >= ? OR m.date_edited >= ? OR m.date_retracted >= ?)'); params.push(since, since, since); }
+  else { conds.push('m.date >= ?'); params.push(since); }
+  if (afterRowid !== null) { conds.push('m.ROWID > ?'); params.push(afterRowid); }
   const rows = db.prepare(`SELECT ${MSG_COLS}, cmj.chat_id AS chat_id
     FROM chat_message_join cmj JOIN message m ON m.ROWID = cmj.message_id LEFT JOIN handle h ON h.ROWID = m.handle_id
-    WHERE ${where} m.date >= ?
-    ORDER BY m.date DESC LIMIT ?`).all(...(chatIds ?? []), since, limit);
+    WHERE ${conds.join(' AND ')}
+    ORDER BY m.date DESC LIMIT ?`).all(...params, limit);
   const atts = attachmentsFor(db, rows.filter((r) => Number(r.cache_has_attachments)).map((r) => Number(r.rowid)));
   return rows.reverse().map((r) => {
     const m = shapeMessage(r, names, Number(r.chat_id));
@@ -187,6 +222,24 @@ export function searchMessages(db, query, { limit, sinceMs = null, chatIds = nul
     }
   }
   return { hits, scanned, capped: scanned >= scanCeiling };
+}
+
+/**
+ * One inline-reply thread: the message that started it, then every reply to it (any age),
+ * oldest first. Replies to a message older than a read window carry `reply_to`; this is how the
+ * caller fetches what they answer.
+ */
+export function threadOf(db, guid, names) {
+  const rows = db.prepare(`SELECT ${MSG_COLS}, cmj.chat_id AS chat_id
+    FROM message m LEFT JOIN chat_message_join cmj ON cmj.message_id = m.ROWID LEFT JOIN handle h ON h.ROWID = m.handle_id
+    WHERE m.guid = ? OR m.thread_originator_guid = ? ORDER BY m.date ASC`).all(guid, guid);
+  const atts = attachmentsFor(db, rows.filter((r) => Number(r.cache_has_attachments)).map((r) => Number(r.rowid)));
+  return rows.map((r) => {
+    const m = shapeMessage(r, names, r.chat_id === null ? null : Number(r.chat_id));
+    const a = atts.get(m.rowid);
+    if (a) m.attachments = a;
+    return m;
+  });
 }
 
 export function maxRowid(db) {
