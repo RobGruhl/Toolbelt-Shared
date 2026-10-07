@@ -143,6 +143,29 @@ on. The bulk reads wait outside a 06–18 weekday window by
 default, a courtesy meant for company workspaces. For a club workspace the user can narrow it
 in `~/.config/slack-cli/config.json`, for example `"business_hours": "03-04"`.
 
+## Discord group chats
+
+**Never automate the user's own Discord account.** Logging in with their token or scripting their
+account ("self-bots") breaks Discord's terms and can get the account banned. The belt has no
+Discord tool for that reason. What works, in order:
+
+1. **Discord's own filters (no code).** For each busy server: right-click the server ›
+   Notification Settings › *Only @mentions*, and turn off @everyone/@here where it's noise. The
+   **Inbox** (top right) collects mentions and replies. If the server has a read-only
+   announcements channel, unmute just that one. Walk the user through this once; it does most of
+   the job.
+2. **On request, in Chrome.** With Claude in Chrome (PERSONAL-SETUP §6), the user opens the
+   channel, and you read what is on the page and summarize it in this digest's format. One
+   channel, while they watch, read-only. No scrolling through history in bulk, no posting.
+3. **A read-only bot, only where the user runs the server or its admins agree.** A bot the user
+   creates (discord.com/developers, Message Content intent on) that only reads and caches
+   messages to a local file. It needs "Manage Server" to add, a machine that stays on, and the
+   members' consent to logging. Don't propose it for servers the user doesn't run.
+
+Discord threads and replies have the same trap as the others: a reply to an old message or a
+post in an old thread doesn't show up in the channel's recent view. The Inbox shows replies to
+the user, and in Chrome, open the thread before summarizing it.
+
 ## Running it every day
 
 Run it on request first ("give me my group-chat digest") until the user trusts it. A cloud
