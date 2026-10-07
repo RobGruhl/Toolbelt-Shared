@@ -69,6 +69,10 @@ summary line. Failures for tools we haven't set up yet are expected.
    preview, and only run it if I say yes.
 7. `codex-fleet`: it bills my ChatGPT Plus plan, no API key needed. Check that the Codex CLI is
    installed and signed in, then do the smoke test only.
+8. `elevenlabs` (PERSONAL-SETUP §9): Keychain key, install, ask me about the narration hook,
+   then one short `speak` after I say yes.
+9. `perplexity` (PERSONAL-SETUP §10): API credit with auto top-up off, the key file, then one
+   `search --explain` and one real search after I say yes.
 
 *Phase 3, everything else.* For each remaining tool, tell me in one line what it does and what
 it needs (a paid account, an app registration, a device), and ask: set up now, skip, or later.
@@ -76,7 +80,7 @@ Set up the ones I pick the same way. Expect these:
 - **Free and local:** `youtube-transcript`, `transcription` (local whisper by default), `print`,
   `caffeinate`, `hot-bag`, `claude-ding`, `spiral-book`, `example-readonly`, `example-write`
   (the examples teach how the gates work), `gmail-filters`.
-- **Need my own paid API key:** `perplexity`, `firecrawl`, `elevenlabs`, `runway-ai`, `oracle`
+- **Need my own paid API key:** `firecrawl`, `runway-ai`, `oracle`
   (OpenAI), `video-rename` (Anthropic API, separate from my Claude subscription).
 - **Need an account or app registration:** `nordvpn` (a NordVPN account), `outlook-harvest` (a
   Microsoft app registration), `gmail-harvest` and the `google-workspace` connector (my own Google

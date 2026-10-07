@@ -181,6 +181,73 @@ minute.
 **If it fails:** 403 means step 2 isn't finished. 401 means the key is wrong or revoked.
 "Insufficient quota" means the prepaid balance is used up.
 
+## 9. Text to speech with ElevenLabs (`tools/elevenlabs`, CLI `agent-voice`)
+
+Claude can read text aloud in a natural voice, narrate the end of each turn, or compose a short
+music track. It runs on your own ElevenLabs account at elevenlabs.io. The free plan includes a
+small monthly character allowance and works with the API. Music and bigger allowances need a
+paid plan (elevenlabs.io/pricing).
+
+1. **Prerequisites:** `brew install ffmpeg` (for `ffplay`, which plays the audio) and Poetry
+   (`brew install pipx && pipx install poetry`).
+2. **Key:** elevenlabs.io › your profile › API keys › create one. Then store it in the macOS
+   Keychain. This command prompts for the key, so it never lands on screen or in shell history:
+
+   ```sh
+   security add-generic-password -s ELEVENLABS_API_KEY -a "$USER" -w
+   ```
+
+3. **Install:** `cd ~/Toolbelt && ./bin/toolbelt setup elevenlabs`. Step 1 installs the tool's
+   own Python environment. Step 2 is optional: it adds a Claude Code hook that speaks the last
+   line of every turn (up to 200 characters, billed each time). Answer no if you only want
+   speech on request; you can add it later: `poetry run agent-voice setup` shows the change, and adding `--yes` installs it.
+4. **Run and check.** The speech server runs in its own Terminal tab:
+
+   ```sh
+   cd ~/Toolbelt/tools/elevenlabs
+   poetry run agent-voice serve                          # leave this running
+   poetry run agent-voice status                         # in another tab: server, key source, ffplay
+   poetry run agent-voice speak "Hello from the toolbelt" --dry-run
+   poetry run agent-voice speak "Hello from the toolbelt"
+   ```
+
+**What it costs:** characters spoken. Text up to 400 characters is spoken right away, longer
+text needs `--yes`, and over 1,000 characters is refused. Music is billed by length and always
+needs `--yes`, with 120 seconds as the maximum. Cloning a voice (`voice-add`) uses one of your
+account's voice slots and also needs `--yes`. Clone only your own voice, or someone's who said
+yes. Your character total is in `~/.local/state/agent-voice/audit.log` and on the ElevenLabs
+usage page.
+
+## 10. Web search with Perplexity (`tools/perplexity`, CLI `pplx`)
+
+Gives Claude fresh web results with citations: `search` returns ranked results, and `agent`
+returns a written answer with sources. It is read-only, and paid from your own Perplexity API
+balance.
+
+1. **API billing is separate from a Perplexity subscription.** perplexity.ai/settings/api: add a
+   payment method and buy a few dollars of credit with **auto top-up off**, so the balance is the
+   cap. (Some Perplexity Pro plans include monthly API credit; that page shows it if yours does.)
+2. **Key:** create one on the same page, copy it, and with it on the clipboard:
+
+   ```sh
+   mkdir -p ~/.config/toolbelt && umask 077 && pbpaste > ~/.config/toolbelt/perplexity.key && pbcopy < /dev/null
+   ```
+
+3. **Check:**
+
+   ```sh
+   cd ~/Toolbelt/tools/perplexity
+   node pplx.mjs search "UW autumn quarter final exam schedule" --explain   # the request and worst-case cost, no call
+   node pplx.mjs search "UW autumn quarter final exam schedule" --limit 5
+   ```
+
+   No `npm install` is needed for the CLI; `toolbelt setup perplexity` only adds the examples'
+   dependency.
+
+**What it costs:** `search` is $0.005 per call. An `agent` answer is usually about $0.02 on the
+default model and at most about $0.11. `--explain` shows the worst case before you spend, and
+every call prints its actual cost.
+
 ## University of Washington
 
 UW students: [UW.md](UW.md) covers getting Canvas and the academic calendar onto your calendar,
