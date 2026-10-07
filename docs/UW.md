@@ -28,11 +28,21 @@ Club and fraternity events, office-hour changes and interviews arrive by text an
 Canvas. That is the texts-to-calendar flow in [PERSONAL-SETUP.md §7](PERSONAL-SETUP.md#7-texts-to-calendar),
 pointed at your personal Google Calendar.
 
-### 3. Browser, as a last resort
+### 3. Canvas and other class sites in your own Chrome
 
-For a date that only exists inside Gradescope, Ed or Handshake, Claude can read the page in your
-own signed-in Chrome ([PERSONAL-SETUP.md §6](PERSONAL-SETUP.md#6-a-browser-claude-can-drive)).
-Use it to read, one task at a time; don't automate UW sign-ins.
+Claude can read Canvas (canvas.uw.edu) in the Chrome you are already signed into, through
+Claude in Chrome or Playwright attached to your Chrome
+([PERSONAL-SETUP.md §6](PERSONAL-SETUP.md#6-a-browser-claude-can-drive)). It sees what you see:
+announcements, assignment instructions, rubrics, grades, modules. Use it for what the feed
+doesn't carry, such as "summarize this week's announcements" or "what does the rubric for the
+essay ask for?" The same works for Gradescope, Ed and Handshake.
+
+- You sign in; Claude never types your NetID password or answers Duo. Duo remembers a browser
+  for 30 days (KB0033884).
+- Read, one task at a time, while you're there. Don't have it submit work, post or message
+  anyone, and don't set up an unattended job that crawls Canvas. UW blocks student API tokens to
+  protect student data, and a crawler in your browser goes against the spirit of that.
+- Only your own courses and records. Class rosters and other students' posts stay in Canvas.
 
 ## What doesn't work, and why
 
