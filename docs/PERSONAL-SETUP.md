@@ -127,6 +127,57 @@ What Claude should do, and what to expect:
 If you want this every morning, ask Claude to make it a routine after the manual version has
 worked a few times.
 
+## 8. Image generation with gpt-image-2 (`tools/openai-image`, CLI `oimg`)
+
+**A ChatGPT subscription does not cover this.** ChatGPT Plus is billed on chatgpt.com; the API is
+a separate account at platform.openai.com with its own prepaid balance. (Plus already makes
+images inside the ChatGPT app. The API is for when Claude makes them for a project.) Same OpenAI
+login, separate billing.
+
+1. **Billing.** platform.openai.com › Settings › Billing: add a card and buy a small prepaid
+   credit ($10 is plenty to start). Leave **auto-recharge off**: the prepaid balance is then a
+   hard cap, and the most you can lose is what you loaded.
+2. **Verify the organization.** Settings › Organization › General › *Verify Organization*. It is
+   a government-ID check through OpenAI's partner, and **gpt-image models refuse every call (403)
+   until it is done**. It usually takes minutes, but it can take a while to apply to your key.
+3. **Make a key.** Settings › API keys › *Create new secret key*, named something like
+   "toolbelt laptop". *All* permissions is simplest. If you pick *Restricted*, allow at least
+   Images, and Responses if you'll use `oimg responses`. Copy it now: OpenAI shows it only once.
+4. **Store it without it touching your screen or shell history.** With the key still on the
+   clipboard:
+
+   ```sh
+   mkdir -p ~/.config/toolbelt && umask 077 && pbpaste > ~/.config/toolbelt/openai-image.key && pbcopy < /dev/null
+   ```
+
+   The file is yours only (mode 600; `oimg` refuses a key file anyone else can read), and the
+   clipboard is cleared. Don't put the key in `~/.zshrc`: every program you run would inherit it.
+5. **Install and check.**
+
+   ```sh
+   cd ~/Toolbelt && ./bin/toolbelt setup openai-image && ./bin/toolbelt doctor openai-image
+   cd tools/openai-image && node oimg.mjs models     # prices, no network
+   ```
+
+6. **First image.** Ask Claude for one, or run the preview yourself:
+
+   ```sh
+   node oimg.mjs generate 'a red fox curled up asleep in fresh snow' --out ~/Pictures/oimg
+   ```
+
+   The bare command is a preview: it prints the model, size, quality and estimated cost, and
+   sends nothing. Add `--yes` to run it. Claude shows you that preview and waits for your yes.
+
+**What it costs** (gpt-image-2, per 1024×1024 image): about $0.03 at the default `low`
+quality, $0.06 at `medium`, $0.21 at `high`. Use `low` while you iterate on a prompt and `high`
+for the final. `node oimg.mjs spend` shows what you have actually spent, which is more reliable
+than the preview's estimate. The tool caps one call at 4 images and $2, and stops if you pass
+$50 in 24 hours until you say to continue. A new API account also starts at about 5 images a
+minute.
+
+**If it fails:** 403 means step 2 isn't finished. 401 means the key is wrong or revoked.
+"Insufficient quota" means the prepaid balance is used up.
+
 ## University of Washington
 
 UW students: [UW.md](UW.md) covers getting Canvas and the academic calendar onto your calendar,
