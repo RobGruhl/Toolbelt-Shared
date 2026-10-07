@@ -15,7 +15,7 @@ time, on this Mac.
 1. If `~/Toolbelt` doesn't exist, `git clone https://github.com/RobGruhl/Toolbelt-Shared.git ~/Toolbelt`.
    If it exists, check that its `origin` is that repo and `git pull`. If it's something else,
    stop and ask me.
-2. Read, in order: `~/Toolbelt/CLAUDE.md`, `docs/PERSONAL-SETUP.md`, `docs/UW.md`,
+2. Read, in order: `~/Toolbelt/CLAUDE.md`, `docs/PERSONAL-SETUP.md`, `docs/BILLING.md`, `docs/UW.md`,
    `skills/toolbelt/SKILL.md`, and skim `SENSIBILITIES.md`. Before you touch a tool, read that
    tool's own `CLAUDE.md`. Those files are the rules; this prompt doesn't replace them.
 3. Run `./bin/toolbelt list` and show me the tools grouped as in the plan below, with one line on
@@ -37,6 +37,8 @@ time, on this Mac.
   one exception, and I run it.
 - **Nothing that costs money or sends anything to another person** without showing me the preview
   first and getting my yes for that specific thing.
+- **Before I add a card to any service,** walk me through its section in `docs/BILLING.md`: prepaid
+  credit, auto-reload off, and the spend limit where there is one. Confirm each setting with me.
 - **One tool at a time, smallest step first.** If something fails twice, stop and show me the
   doctor's `fix:` line and its `summary` line. Don't work around a failure.
 - Don't edit the repo's files to make a check pass. If a tool seems broken, tell me and keep a
@@ -73,6 +75,10 @@ summary line. Failures for tools we haven't set up yet are expected.
    then one short `speak` after I say yes.
 9. `perplexity` (PERSONAL-SETUP §10): API credit with auto top-up off, the key file, then one
    `search --explain` and one real search after I say yes.
+10. `typesafe-jev` (PERSONAL-SETUP §11): my own TypeSafe account and key, then walk me through
+   its Data terms so I can decide about sending mail to it. Then build and run the group-chat
+   digest (`docs/recipes/group-chat-digest.md`) once, and the Gmail digest
+   (`docs/recipes/gmail-digest.md`) only if I recorded that decision.
 
 *Phase 3, everything else.* For each remaining tool, tell me in one line what it does and what
 it needs (a paid account, an app registration, a device), and ask: set up now, skip, or later.
@@ -80,7 +86,7 @@ Set up the ones I pick the same way. Expect these:
 - **Free and local:** `youtube-transcript`, `transcription` (local whisper by default), `print`,
   `caffeinate`, `hot-bag`, `claude-ding`, `spiral-book`, `example-readonly`, `example-write`
   (the examples teach how the gates work), `gmail-filters`.
-- **Need my own paid API key:** `firecrawl`, `runway-ai`, `oracle`
+- **Need my own paid API key:** `firecrawl` (has a free plan), `runway-ai`, `oracle`
   (OpenAI), `video-rename` (Anthropic API, separate from my Claude subscription).
 - **Need an account or app registration:** `nordvpn` (a NordVPN account), `outlook-harvest` (a
   Microsoft app registration), `gmail-harvest` and the `google-workspace` connector (my own Google

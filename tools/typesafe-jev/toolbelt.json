@@ -1,0 +1,125 @@
+{
+  "name": "typesafe-jev",
+  "aliases": ["jev"],
+  "kind": "tool",
+  "description": "Typed judgments from TypeSafe's Jev model: send text or JSON state plus Noul (yes-probability), Choice (one of a set, with a distribution) or Score (position on ordered levels) questions and get back probabilities code can consume; pinned model, code ceilings on state and question size, a credential-file egress guard, and an audit line per paid call",
+  "hits": "TypeSafe API (api.typesafe.ai; paid per input token, the operator's own key)",
+  "surface": "CLI only. `models` lists the names the key may send (free); `ask` POSTs one evaluation to /v1/systemone under code ceilings (96 KB state, 200 KB request, 32 questions, 255 options, 2–10 levels) with the model pinned to jev-1.13.0; `--explain` shows the request and its estimated cost without calling; `usage` totals the local audit log. No write exists on the service",
+  "readme_label": "`tools/typesafe-jev` (`jev`)",
+  "platforms": ["darwin"],
+  "origin": {
+    "repo": "local",
+    "vendored_at": "2026-09-27",
+    "note": "Written in the belt from the TypeSafe docs (https://docs.typesafe.ai/api.md, /models.md) and the vendor agent skill (github.com/typesafe-ai/skills, skills/typesafe-ai/SKILL.md), checked live against api.typesafe.ai on 2026-09-27. Zero dependencies: plain fetch, not @typesafe-ai/sdk. The vendor's `claude plugin install typesafe@typesafe-ai` / `npx skills add` step is not taken: the belt has one router skill and this CLAUDE.md is the contract"
+  },
+  "runtime": {
+    "node": ">=20",
+    "package_manager": "none"
+  },
+  "entrypoints": {
+    "cli": "node jev.mjs"
+  },
+  "env": [
+    {
+      "name": "TYPESAFE_API_KEY",
+      "required": false,
+      "secret": true,
+      "description": "Your TypeSafe API key, billed per input token to your own account; the name the official SDKs read. Alternatives: ~/.config/toolbelt/typesafe-jev.key or tools/typesafe-jev/.env (gitignored), both mode 600. Not needed for --explain or usage"
+    },
+    {
+      "name": "TYPESAFE_JEV_HOME",
+      "required": false,
+      "secret": false,
+      "description": "Where audit.log lives. Default ~/.local/share/typesafe-jev"
+    }
+  ],
+  "auth": {
+    "principal": "user",
+    "flow": "A static API key from the operator's own TypeSafe account, billed to it; read from $TYPESAFE_API_KEY, else a 600-mode key file outside the tree, else the gitignored tools/typesafe-jev/.env; sent only as the Bearer header, never printed, logged or placed on argv",
+    "login": "Create a key in your TypeSafe account, then either export TYPESAFE_API_KEY, or: mkdir -p ~/.config/toolbelt && umask 077 && printf '%s\\n' '<key>' > ~/.config/toolbelt/typesafe-jev.key",
+    "identity": "node jev.mjs models",
+    "caches": [
+      {
+        "path": "~/.config/toolbelt/typesafe-jev.key",
+        "class": "static",
+        "store": "file",
+        "note": "optional 600-mode key file; resolveKey() in jev.mjs refuses a group/world-readable one",
+        "revoke": "Revoke the key in the TypeSafe account, then rm ~/.config/toolbelt/typesafe-jev.key"
+      },
+      {
+        "path": "tools/typesafe-jev/.env",
+        "class": "static",
+        "store": "file",
+        "note": "in-tree fallback the operator chose; gitignored by tools/typesafe-jev/.gitignore, refused unless mode 600; the your_… template value counts as absent",
+        "revoke": "Revoke the key in the TypeSafe account, then remove the line from tools/typesafe-jev/.env"
+      }
+    ]
+  },
+  "safeguards": [
+    "Read-only on the service: /v1/systemone evaluates and /v1/models lists; the API has no mutation and jev ships no other call (SENSIBILITIES #1)",
+    "Ceilings are code constants in jev.mjs that no flag raises: MAX_STATE_BYTES 96000, MAX_REQUEST_BYTES 200000, MAX_QUESTIONS 32, MAX_OPTIONS 255, 2–10 Score levels; a request over one exits 2 before anything is sent. A one-level Score, which the API accepts and bills, is refused (SENSIBILITIES #3)",
+    "The model is pinned to jev-1.13.0 so an alias move cannot shift tuned thresholds; --model is the explicit override (SENSIBILITIES #3)",
+    "--explain prints the endpoint, the question ids and types, state and request bytes against their ceilings, an estimated token count and cost, and whether a key was found — with the state summarized and the key redacted — and makes no call (SENSIBILITIES #5)",
+    "Egress guard: a --state file is sent only after resolving symlinks and refusing credential-shaped names (.env*, *.key, *.pem, id_*, .netrc, .npmrc, credentials) and anything under ~/.ssh, ~/.gnupg, ~/.aws or ~/.config/toolbelt (assertStatePath in jev.mjs)",
+    "Audit line per call on stderr, and per ask appended to ~/.local/share/typesafe-jev/audit.log (dir 700, file 600): timestamp, verb, status, answering model, question ids, state bytes, input tokens, cost — never the key, the state, the questions or the answers (SENSIBILITIES #7)",
+    "30 s timeout per request; 408/429/5xx retry at most 3 attempts with backoff honoring retry-after-ms / Retry-After (capped at 30 s); 401, 403, 400 and 422 each end with a plain sentence and exit 1 (SENSIBILITIES #8)",
+    "The key comes from $TYPESAFE_API_KEY, ~/.config/toolbelt/typesafe-jev.key or the gitignored tools/typesafe-jev/.env; a group/world-readable file is refused (SENSIBILITIES #11)",
+    "The tiers are a table in the code (VERBS in jev.mjs) and the test suite asserts this manifest's verbs[] matches it"
+  ],
+  "verbs": [
+    { "name": "models", "tier": "read", "surface": "cli", "note": "GET /v1/models — the names the key may send in `model` (today the jev-latest and jev-preview aliases); runs no inference, reports no usage" },
+    { "name": "ask", "tier": "read", "surface": "cli", "note": "POST /v1/systemone — one evaluation of Noul/Choice/Score questions over text or JSON state; $0.042 per million input tokens (≈$0.00002 for a short message), output free; --explain first shows the estimate" },
+    { "name": "usage", "tier": "read", "surface": "cli", "note": "totals calls, input tokens and cost from the local audit.log; no network" },
+    { "name": "batch / fan-out over a directory", "tier": "never", "surface": "cli", "note": "no verb exists; a caller loops over `ask` itself, and each call is audited" }
+  ],
+  "risk": {
+    "read_only": true,
+    "destructive": false,
+    "idempotent": true,
+    "open_world": false,
+    "worst_case": "sends up to 200 KB of operator-named text to TypeSafe per call (not trained on; retention per their DPA) and spends ≈$0.002 of the operator's own credit at the ceiling, each call audited with its actual token count"
+  },
+  "systems": [
+    {
+      "name": "TypeSafe Jev (typed AI judgments: classify, route, score, verify)",
+      "read": "node jev.mjs models",
+      "preferred": true
+    }
+  ],
+  "checks": [
+    { "use": "runtime.node", "min": "20" },
+    {
+      "use": "files.env_set",
+      "name": "TYPESAFE_API_KEY",
+      "key_file": "~/.config/toolbelt/typesafe-jev.key",
+      "severity": "warn",
+      "label": "TypeSafe API key present ($TYPESAFE_API_KEY or a 600-mode ~/.config/toolbelt/typesafe-jev.key)",
+      "fix": "Create a key in your TypeSafe account, then export TYPESAFE_API_KEY=… or write it to ~/.config/toolbelt/typesafe-jev.key (chmod 600)"
+    },
+    {
+      "use": "auth.key_accepted",
+      "provider": "typesafe",
+      "env": "TYPESAFE_API_KEY",
+      "key_file": "~/.config/toolbelt/typesafe-jev.key",
+      "severity": "warn",
+      "label": "TypeSafe accepts the key (GET /v1/models, no inference)"
+    },
+    {
+      "use": "mcp.http_reachable",
+      "url": "https://api.typesafe.ai",
+      "severity": "warn",
+      "label": "api.typesafe.ai reachable"
+    }
+  ],
+  "smoke_test": {
+    "command": "node jev.mjs ask --text 'smoke test' --noul 'Is this a test?' --explain | grep -q 'no call made' && node --test test/*.test.mjs",
+    "expect": "the pre-flight renders without calling TypeSafe; unit tests green — key precedence and mode refusal, schema validation and ceilings, the egress guard, audit-line contents, usage totals, retry delays, manifest/VERBS parity"
+  },
+  "do_not_vendor": [
+    ".env",
+    "node_modules/",
+    "tmp/",
+    "*.log"
+  ],
+  "core": false
+}

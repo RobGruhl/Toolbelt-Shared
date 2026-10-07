@@ -9,6 +9,9 @@ Several tools need a paid account of your own (image, voice, search, transcripti
 do not need them. Set up only the ones you use; the doctor reports the rest as not set up, which
 is fine.
 
+**Money:** every paid tool, how it bills and how to cap it: [BILLING.md](BILLING.md). Read it
+before adding a card anywhere.
+
 **Fastest route:** paste the prompt in [SETUP-WITH-CLAUDE.md](SETUP-WITH-CLAUDE.md) into Claude Code
 and it walks you through everything below, tool by tool.
 
@@ -171,6 +174,9 @@ login, separate billing.
    The bare command is a preview: it prints the model, size, quality and estimated cost, and
    sends nothing. Add `--yes` to run it. Claude shows you that preview and waits for your yes.
 
+**Hard limits:** besides prepaid credit with auto-recharge off, set an organization spend limit
+(Settings › Organization › Limits). See [BILLING.md](BILLING.md).
+
 **What it costs** (gpt-image-2, per 1024×1024 image): about $0.03 at the default `low`
 quality, $0.06 at `medium`, $0.21 at `high`. Use `low` while you iterate on a prompt and `high`
 for the final. `node oimg.mjs spend` shows what you have actually spent, which is more reliable
@@ -224,9 +230,9 @@ Gives Claude fresh web results with citations: `search` returns ranked results, 
 returns a written answer with sources. It is read-only, and paid from your own Perplexity API
 balance.
 
-1. **API billing is separate from a Perplexity subscription.** perplexity.ai/settings/api: add a
-   payment method and buy a few dollars of credit with **auto top-up off**, so the balance is the
-   cap. (Some Perplexity Pro plans include monthly API credit; that page shows it if yours does.)
+1. **API billing is separate from a Perplexity subscription.** In the API console's Billing page
+   (console.perplexity.ai), buy a few dollars of credit with **auto reload off**, so the balance is the
+   cap. (A Perplexity Pro subscription no longer includes API credit.)
 2. **Key:** create one on the same page, copy it, and with it on the clipboard:
 
    ```sh
@@ -248,10 +254,66 @@ balance.
 default model and at most about $0.11. `--explain` shows the worst case before you spend, and
 every call prints its actual cost.
 
+## 11. Digests: group chats and Gmail
+
+Two recipes in `docs/recipes/` are patterns for Claude to build and run with these tools. Ask
+for them in plain words ("give me my group-chat digest", "digest my inbox").
+
+- **[Group-chat digest](recipes/group-chat-digest.md):** the last day of group chats becomes one
+  list: what needs you, dates to add to your calendar, and announcements. The banter is
+  skipped. It needs only §3 (and §4 for calendar adds).
+- **[Gmail digest](recipes/gmail-digest.md):** the same for your inbox, made cheap with
+  **TypeSafe Jev** (`tools/typesafe-jev`). Jev answers typed questions ("is someone waiting on a
+  reply?", "which bucket?") for fractions of a cent, so it sorts every message and Claude reads
+  only the few it flags. **Get your own TypeSafe account** at typesafe.ai, store the key as the
+  recipe shows, and read the tool's *Data terms* before sending it any mail: the decision to send
+  your mail to their API is yours to make and record.
+
 ## University of Washington
 
 UW students: [UW.md](UW.md) covers getting Canvas and the academic calendar onto your calendar,
 and what UW does not allow (Canvas API tokens, scripted NetID sign-ins).
+
+## Keeping it current
+
+**Updating.** The belt changes as tools improve:
+
+```sh
+cd ~/Toolbelt && git pull && ./bin/toolbelt doctor
+```
+
+If a pull changed a tool's dependencies, re-run `./bin/toolbelt setup <tool>` for that tool. The
+doctor catches some npm mismatches but not every lockfile change. This lists the tools whose
+lockfiles the last pull touched:
+
+```sh
+git diff --stat 'HEAD@{1}' HEAD -- '*package-lock.json' '*poetry.lock'
+```
+
+`CHANGELOG.md` lists anything a pull needs you to re-run. If you edited a tool locally, keep
+your edit on a branch so a pull never fights it.
+
+**Dependabot.** GitHub's Dependabot watches every tool's dependencies. Once a month it opens a
+pull request on the repo for each newer version (npm and Python), and it flags security fixes as
+soon as they are published. Nothing changes on your Mac until someone merges the pull request and
+you `git pull`. To review one:
+
+1. Read what changed (the PR links the release notes). Patch and minor bumps are usually safe;
+   a major version (`7.x` to `8.0`) can break the tool.
+2. Test it: `gh pr checkout <number>`, then `./bin/toolbelt setup <tool>`,
+   `./bin/toolbelt doctor <tool> --smoke`, and the tool's tests.
+3. Merge only if those pass. Close the PR if it breaks something, and say why.
+
+**Write access.** If you can push to this repo, remember it is **public**: everything you commit,
+and its history, is visible to everyone, forever. So:
+
+- Work on a branch and open a pull request: `git switch -c <topic>`, commit, `gh pr create`.
+  Small fixes are fine to merge yourself once checks pass.
+- Never commit anything personal: no keys (the pre-commit hook from `setup toolbelt` blocks
+  most), no messages, mail, names or exports. Preferences belong in `~/.config/toolbelt/`, never
+  in the tree.
+- Run `./bin/toolbelt doctor repo-integrity` before pushing. After changing a manifest,
+  regenerate the derived docs (`toolbelt readme|systems|risk|creds --write`). Never hand-edit them.
 
 ## When something breaks
 

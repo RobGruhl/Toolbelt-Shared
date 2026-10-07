@@ -1,0 +1,12 @@
+{
+  "name": "typesafe-jev",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "jev — typed Choice/Noul/Score judgments from TypeSafe's Jev model on the operator's own key; no dependencies",
+  "bin": { "jev": "./jev.mjs" },
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

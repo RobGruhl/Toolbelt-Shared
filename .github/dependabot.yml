@@ -9,6 +9,7 @@ updates:
       - /tools/openai-image
       - /tools/oracle
       - /tools/perplexity
+      - /tools/typesafe-jev
       - /tools/playwright
       - /tools/runway-ai
       - /tools/slack
