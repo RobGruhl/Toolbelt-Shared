@@ -190,7 +190,7 @@ function refuseExisting(files) {
 
 // -- Audit (SENSIBILITIES #7) -------------------------------------------------------------
 
-export function auditLine({ verb, model, size, quality, est, file, bytes, usage, responseId }) {
+export function auditLine({ verb, model, size, quality, est, file, bytes, usage, shared, responseId }) {
   const parts = [
     `[oimg audit] ${new Date().toISOString()}`,
     `verb=${verb}`, `model=${model}`, `size=${size}`, `quality=${quality}`,
@@ -198,6 +198,7 @@ export function auditLine({ verb, model, size, quality, est, file, bytes, usage,
     `file=${JSON.stringify(file)}`, `bytes=${bytes}`,
   ];
   if (usage) parts.push(`tokens_in=${usage.input ?? '?'}`, `tokens_out=${usage.output ?? '?'}`);
+  if (usage && shared > 1) parts.push(`tokens_shared=${shared}`);
   if (responseId) parts.push(`response_id=${responseId}`);
   return parts.join(' ');
 }
@@ -309,14 +310,26 @@ async function run(p) {
   else ({ images, raw, responseId, revisedPrompt } = await generateViaResponses(p.request.input, p.opts));
   if (!images.length) throw new Error('the API returned no image (the model may have answered in text only)');
   const usage = usageOf(raw);
+  const kept = images.slice(0, p.files.length);
+  const shares = splitUsage(usage, kept.length);
   const written = [];
-  images.slice(0, p.files.length).forEach((buf, i) => {
+  kept.forEach((buf, i) => {
     fs.writeFileSync(p.files[i], buf, { flag: 'wx' });
     const bytes = fs.statSync(p.files[i]).size; // re-read: the write is the claim, the stat is the evidence
     written.push({ file: p.files[i], bytes });
-    audit(auditLine({ verb: p.verb, model: p.request.model, size: p.opts.size, quality: p.opts.quality, est: p.est.perImage, file: p.files[i], bytes, usage: i === 0 ? usage : null, responseId }));
+    audit(auditLine({ verb: p.verb, model: p.request.model, size: p.opts.size, quality: p.opts.quality, est: p.est.perImage, file: p.files[i], bytes, usage: shares[i], shared: kept.length, responseId }));
   });
   return { written, usage, responseId, revisedPrompt };
+}
+
+/**
+ * The API reports one usage block per call, not per image. Give each image an integer share so
+ * every audit line prices its own image and the shares sum to exactly what was billed.
+ */
+export function splitUsage(usage, n) {
+  if (!usage || n <= 1) return [usage];
+  const share = (total, i) => total == null ? null : Math.floor(total / n) + (i < total % n ? 1 : 0);
+  return Array.from({ length: n }, (_, i) => ({ ...usage, input: share(usage.input, i), output: share(usage.output, i) }));
 }
 
 function spendReport(now = Date.now()) {

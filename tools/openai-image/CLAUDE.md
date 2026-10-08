@@ -78,7 +78,11 @@ working in (its `assets/` or wherever its convention says), not into this tool's
 [oimg audit] 2026-08-22T20:11:04.118Z verb=generate model=gpt-image-2 size=1024x1024 quality=low est_usd=0.0060 file="/…/assets/compass.png" bytes=812344 tokens_in=12 tokens_out=272
 ```
 
-The bytes come from re-stating the written file; the key is never in the line. "What did the
+The bytes come from re-stating the written file; the key is never in the line. The API reports usage
+once per call, so an `-n 4` call's tokens are split into four integer shares, one per line, marked
+`tokens_shared=4`; the shares sum to what was billed. `spend` treats a token-less line written
+within 2 s of a token-bearing line with the same verb, model, size and quality as that call's
+sibling and does not price it again. "What did the
 agent render last Tuesday" is one grep of that file.
 
 ## Estimates

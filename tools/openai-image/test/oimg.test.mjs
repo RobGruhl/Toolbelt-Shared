@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 process.env.OPENAI_IMAGE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'oimg-test-'));
 
-const { MAX_N, MAX_EST_USD, HARD_ASK_USD, MAX_ALLOW_USD, VERBS, AUDIT_FILE, ALLOW_FILE, parse, plan, planOutputs, slug, auditLine, renderPreview, allowSpend, main } = await import('../oimg.mjs');
+const { MAX_N, MAX_EST_USD, HARD_ASK_USD, MAX_ALLOW_USD, VERBS, AUDIT_FILE, ALLOW_FILE, parse, plan, planOutputs, slug, auditLine, splitUsage, renderPreview, allowSpend, main } = await import('../oimg.mjs');
 const { auditCost, spentSince, allowedSince, checkSpend } = await import('../lib/spend.js');
 const { parseSize, estimateCost, buildGenerateRequest, buildEditRequest, buildResponsesRequest, resolveKey } = await import('../lib/gpt-image.js');
 
@@ -115,6 +115,25 @@ test('auditCost prices real tokens, falls back to est_usd, ignores junk', () => 
   assert.equal(c.tokens, true);
   assert.equal(auditCost(line('2026-10-05T06:15:40.034Z', '')).usd, 0.04);
   assert.equal(auditCost('hello'), null);
+});
+
+test('a multi-image call is billed once: shares sum to the call, legacy siblings are not re-priced', () => {
+  const shares = splitUsage({ input: 464, output: 28096 }, 4);
+  assert.deepEqual(shares.map(s => s.output), [7024, 7024, 7024, 7024]);
+  assert.equal(shares.reduce((a, s) => a + s.input, 0), 464);
+  assert.deepEqual(splitUsage(null, 4), [null]);
+  const l = auditLine({ verb: 'generate', model: 'gpt-image-2', size: '1024x1024', quality: 'high', est: 0.211, file: '/x.png', bytes: 1, usage: shares[1], shared: 4 });
+  assert.match(l, /tokens_in=116 tokens_out=7024 tokens_shared=4$/);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oimg-sib-'));
+  const audit = path.join(dir, 'audit.log');
+  const one = (t, extra) => line(`2026-10-08T18:03:54.${t}Z`, extra);
+  fs.writeFileSync(audit, [one('519', 'tokens_in=464 tokens_out=28096'), one('522', ''), one('523', ''), one('525', ''),
+    line('2026-10-08T18:30:00.000Z', '')].join('\n') + '\n');
+  const s = spentSince(audit, Date.parse('2026-10-08T20:00:00Z'));
+  assert.equal(s.images, 5);
+  assert.equal(s.estimated, 1); // only the lone token-less line, not the three siblings
+  assert.ok(Math.abs(s.usd - ((28096 * 30 + 464 * 5) / 1e6 + 0.04)) < 1e-9);
 });
 
 test('spentSince counts only the rolling 24h window; allowances add to the line', () => {

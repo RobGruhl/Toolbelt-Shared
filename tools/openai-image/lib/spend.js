@@ -33,14 +33,28 @@ export function auditCost(line) {
   return { at, model: f.model, usd: Number.isFinite(est) ? est : 0, tokens: false };
 }
 
+// Older multi-image calls put the whole call's tokens on the first image's line and none on
+// the rest. A token-less line written within this long of a token-bearing line with the same
+// verb, model, size and quality is a sibling from that call: its cost is already counted.
+const SIBLING_MS = 2000;
+
+const callKey = (line) => (line.match(/ (verb|model|size|quality)=\S+/g) || []).join('');
+
 /** Spend in the window ending `now` (default: the last 24 hours), from the audit log. */
 export function spentSince(auditFile, now = Date.now(), windowMs = DAY_MS) {
   let usd = 0, images = 0, estimated = 0;
   if (!existsSync(auditFile)) return { usd, images, estimated };
+  let lastPriced = null; // { at, key } of the latest line that carried tokens
   for (const line of readFileSync(auditFile, 'utf8').split('\n')) {
     const c = auditCost(line);
-    if (!c || c.at <= now - windowMs || c.at > now) continue;
-    usd += c.usd; images++;
+    if (!c) continue;
+    const key = callKey(line);
+    const sibling = !c.tokens && lastPriced && lastPriced.key === key && c.at - lastPriced.at <= SIBLING_MS;
+    if (c.tokens) lastPriced = { at: c.at, key };
+    if (c.at <= now - windowMs || c.at > now) continue;
+    images++;
+    if (sibling) continue;
+    usd += c.usd;
     if (!c.tokens) estimated++;
   }
   return { usd, images, estimated };
