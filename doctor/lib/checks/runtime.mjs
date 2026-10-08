@@ -43,7 +43,8 @@ export const checks = {
           const kegs = readdirSync(optDir)
             .filter((d) => /^python@3\.\d+$/.test(d))
             .sort((a, b) => cmpVersions(b.split('@')[1], a.split('@')[1]));
-          for (const keg of kegs) candidates.push(`${optDir}/${keg}/bin/python3`);
+          // only the default keg ships a bare `python3`; every keg has `python3.X`
+          for (const keg of kegs) candidates.push(`${optDir}/${keg}/bin/python${keg.split('@')[1]}`);
         }
         for (const c of candidates) {
           const bin = await findExecutable([c]);

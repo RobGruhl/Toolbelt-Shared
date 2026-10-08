@@ -9,7 +9,7 @@ and audit trail are in [CLAUDE.md](CLAUDE.md).
 
 ```bash
 cd tools/video-rename
-poetry env use /opt/homebrew/opt/python@3.13/bin/python3.13 && poetry install   # or: toolbelt setup video-rename
+poetry env use /opt/homebrew/bin/python3.13 && poetry install   # or: toolbelt setup video-rename
 printf 'ANTHROPIC_API_KEY=sk-ant-...\n' > ~/.config/toolbelt/video-rename.env && chmod 600 ~/.config/toolbelt/video-rename.env
 
 poetry run video-rename analyze ~/Downloads/IMG_4821.mov --explain   # free pre-flight

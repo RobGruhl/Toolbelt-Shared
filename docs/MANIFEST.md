@@ -317,7 +317,7 @@ Each entry instantiates a built-in check (see `doctor/lib/checks/`) with paramet
 | `system.ffmpeg` | – | ffmpeg and ffprobe installed |
 | `system.clone_fresh` | `behind_max?` | clone is current with `origin/main`. Skips with no origin remote; warns if the fetch fails (staleness unknown) or if behind at all; fails past `behind_max` (default 20) — gate fixes on main are not on this machine |
 | `runtime.node` | `min` | the Node running the doctor satisfies `min` (the doctor and the tools share one interpreter) |
-| `runtime.python` | `min` | a python3 (PATH or `/opt/homebrew/opt/python@3.*`) satisfies |
+| `runtime.python` | `min` | a python3 (PATH, or `python3.X` in a `/opt/homebrew/opt/python@3.*` keg) satisfies |
 | `runtime.poetry` | – | poetry available (pipx) |
 | `runtime.pipx` | – | pipx available |
 | `runtime.pipx_app` | `package, binary?` | `binary ?? package` on PATH; fix is `pipx install <package>` |

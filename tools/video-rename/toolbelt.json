@@ -17,7 +17,7 @@
   },
   "install": [
     {
-      "run": "poetry env use /opt/homebrew/opt/python@3.13/bin/python3.13 && poetry install",
+      "run": "poetry env use /opt/homebrew/bin/python3.13 && poetry install",
       "description": "Create the in-project .venv on Homebrew Python 3.13 and install the locked dependencies (PyAV, anthropic, pillow, typer, rich)",
       "why": "poetry.toml pins the venv in-project so the path is stable and nothing is installed globally; PyAV needs Homebrew ffmpeg 8.x at runtime",
       "yes": ".venv/ is created inside tools/video-rename from poetry.lock; no network call to Anthropic is made",
