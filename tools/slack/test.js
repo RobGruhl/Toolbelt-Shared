@@ -41,6 +41,7 @@ const { computeNewText, renderDiff, lossyReasons } = await import('./lib/edit.js
 const { validateInviteTarget, slackErrorCode, describeChannel } = await import('./lib/invite.js');
 const { isSinglePageRead, channelReadExemption, SINGLE_PAGE_SIZE, checkBusinessHours } = await import('./lib/safeguards.js');
 const { validateChannelName } = await import('./lib/create-channel.js');
+const { validateEmojiName, inspectEmojiImage, MAX_EMOJI_BYTES } = await import('./lib/emoji.js');
 
 const PERMALINK_BASE = config.getPermalinkBase();
 
@@ -341,6 +342,29 @@ async function unitTests() {
       if (!threw) throw new Error(`"${bad}" accepted`);
     }
     return 'lowercase only; spaces, periods, #, leading hyphen, >80 chars refused';
+  });
+
+  await test('validateEmojiName strips colons and case, rejects everything else', async () => {
+    const ok = validateEmojiName(':Tigress-BCN_2:');
+    if (ok.name !== 'tigress-bcn_2') throw new Error(`not normalized: ${JSON.stringify(ok)}`);
+    for (const bad of ['', '::', 'has space', 'dot.name', 'emoji!', 'x'.repeat(101)]) {
+      if (!validateEmojiName(bad).error) throw new Error(`"${bad}" accepted`);
+    }
+    return 'colons + case normalized; spaces, periods, punctuation, >100 chars refused';
+  });
+
+  await test('inspectEmojiImage reads format and size from headers, enforces 128 KB', async () => {
+    const png = Buffer.alloc(64);
+    png.writeUInt32BE(0x89504e47, 0); png.writeUInt32BE(128, 16); png.writeUInt32BE(128, 20);
+    const p = inspectEmojiImage(png);
+    if (p.format !== 'png' || p.width !== 128 || p.errors.length || p.warnings.length) throw new Error(`png: ${JSON.stringify(p)}`);
+    const gif = Buffer.from('GIF89a\x00\x02\x00\x01', 'latin1');
+    const g = inspectEmojiImage(gif);
+    if (g.format !== 'gif' || g.width !== 512 || g.height !== 256 || g.warnings.length !== 2) throw new Error(`gif: ${JSON.stringify(g)}`);
+    const big = Buffer.alloc(MAX_EMOJI_BYTES + 1); png.copy(big);
+    if (!inspectEmojiImage(big).errors.length) throw new Error('over-limit png accepted');
+    if (!inspectEmojiImage(Buffer.from('hello world')).errors.length) throw new Error('non-image accepted');
+    return 'png/gif dims parsed; non-square and oversize warned; >128 KB and non-images refused';
   });
 
   await test('validateInviteTarget rejects a DM and a person in the channel slot', async () => {

@@ -495,6 +495,30 @@ export async function callSlackApi(endpoint, params, cookies, token, opts = {}) 
 }
 
 /**
+ * Make an authenticated multipart request to the Slack API — the shape a
+ * method that takes file bytes inline (emoji.add) requires. `file` is
+ * { field, bytes, filename, type }; fetch sets the multipart boundary.
+ */
+export async function callSlackApiMultipart(endpoint, params, file, cookies, token, opts = {}) {
+  const form = new FormData();
+  form.append('token', token);
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null) {
+      form.append(key, String(value));
+    }
+  }
+  form.append(file.field, new Blob([file.bytes], { type: file.type }), file.filename);
+
+  return makeApiRequest(
+    `${getApiBase()}${endpoint}`,
+    { method: 'POST', body: form },
+    cookies,
+    'Slack API',
+    opts
+  );
+}
+
+/**
  * The id the Edge API is addressed by: the configured SLACK_ENTERPRISE_ID,
  * else the org id auth.test reported at login (Enterprise Grid), else the
  * team id (a single workspace). Throws a plain message when none is known.

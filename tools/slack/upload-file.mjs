@@ -67,11 +67,22 @@ if (!urlResp.ok) {
 }
 const { upload_url, file_id } = urlResp;
 
-const put = await fetch(upload_url, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/octet-stream', Cookie: formatCookiesForHeader(cookies) },
-  body: bytes,
-});
+// A stalled upload connection otherwise waits forever. Nothing is posted until
+// completeUploadExternal, so aborting here leaves no partial message.
+const UPLOAD_TIMEOUT_MS = 120_000;
+let put;
+try {
+  put = await fetch(upload_url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream', Cookie: formatCookiesForHeader(cookies) },
+    body: bytes,
+    signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
+  });
+} catch (err) {
+  const why = err.name === 'TimeoutError' ? `no response in ${UPLOAD_TIMEOUT_MS / 1000}s` : err.message;
+  console.error(`[upload] file POST failed: ${why} — nothing was posted; retry, or shrink the file`);
+  process.exit(1);
+}
 if (!put.ok) {
   console.error(`[upload] file POST failed: HTTP ${put.status}`);
   process.exit(1);

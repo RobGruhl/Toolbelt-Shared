@@ -1,9 +1,9 @@
 {
   "name": "slack",
   "kind": "tool",
-  "description": "Read-first Slack CLI + read-only MCP server on your own browser session: search, export, download; send/react/edit/invite TTY-gated, create-channel typed-echo with no bypass",
+  "description": "Read-first Slack CLI + read-only MCP server on your own browser session: search, export, download; send/react/edit/invite/add-emoji TTY-gated, create-channel typed-echo with no bypass",
   "hits": "Slack",
-  "surface": "MCP read tools + CLI (search, export, read-only file download); `send`/`react`/`edit`/`invite` preview then confirm at /dev/tty or `--yes` after a human approved the preview; `upload-file.mjs` is `--yes`-only; `create-channel` requires typing the channel name back with no `--yes`; no delete/kick/archive verb exists",
+  "surface": "MCP read tools + CLI (search, export, read-only file download); `send`/`react`/`edit`/`invite`/`add-emoji` preview then confirm at /dev/tty or `--yes` after a human approved the preview; `upload-file.mjs` is `--yes`-only; `create-channel` requires typing the channel name back with no `--yes`; no delete/kick/archive verb exists",
   "platforms": [
     "darwin",
     "win32"
@@ -109,6 +109,7 @@
     "react (lib/react.js): same preview → confirmReactOnTty() on /dev/tty → --yes tier as send; REACT_AUDIT stderr line on every mutation; --remove is the undo",
     "edit (lib/edit.js): chat.update on your own messages only (the author is checked against auth.test first); the current text is fetched and diffed before any prompt; the pre-edit text is written to data/edit-backups/<channel>-<ts>.json (mode 600, append-only revisions[] chain) before the update; refuses when files, attachments, or non-text blocks would be dropped unless --allow-lossy; confirmEditOnTty() on /dev/tty or --yes; EDIT_AUDIT line on every mutation",
     "invite (lib/invite.js): conversations.invite on an existing channel, one call per person, so partial success is reported and never rolled back; the preview states the channel's privacy (an unreadable conversations.info renders UNKNOWN and is treated as private) and names the history disclosure a private invite carries; every invitee is resolved through users.info and shown with their email; confirmInviteOnTty() on /dev/tty or --yes; already_in_channel counts as success; INVITE_AUDIT line per person",
+    "add-emoji (lib/emoji.js): the name is validated and the image's format, dimensions and size (<= 128 KB) are read from its header before any network; emoji.list is checked and a taken name is refused before any prompt; confirmEmojiOnTty() on /dev/tty requires the word \"emoji\", or --yes after a human approved the --dry-run preview; EMOJI_AUDIT stderr line on every upload; no remove verb exists",
     "upload-file.mjs: resolves the recipient, previews, and refuses to deliver without --yes; there is no TTY prompt, so --yes alone delivers — confirm the file and the recipient with the user before passing it",
     "create-channel (lib/create-channel.js): a channel name can never be reclaimed, so confirmCreateOnTty() reads /dev/tty and requires the operator to type the channel name back; there is no --yes and no bypass; without a TTY the command exits 2 and prints the staged command for a human to run; the name is validated before auth and the collision check is advisory only (Slack's name_taken is the arbiter)",
     "Off-hours bulk gating (lib/safeguards.js enforceOffHours): my-messages, channel, mentions, reactions, threads and year-review are blocked Mon-Fri during SLACK_BUSINESS_HOURS (default 06-18) in SLACK_BUSINESS_TZ (default: this machine's zone) unless --force, which proceeds with a warning (SENSIBILITIES #4). One fail-closed exemption (channelReadExemption): `channel` bounded to one search page (--max-pages 1 or --max-results <= 100) of a private channel the caller is a member of, verified by conversations.info is_private and is_member; a public channel, unknown membership, unreadable info, or any multi-page shape keeps the gate",
@@ -135,6 +136,7 @@
     { "name": "react", "tier": "write-gated", "gate": "tty", "surface": "cli", "note": "confirmReactOnTty() on /dev/tty, or --yes after preview; reversible with --remove" },
     { "name": "edit", "tier": "write-gated", "gate": "tty", "surface": "cli", "note": "confirmEditOnTty() on /dev/tty or --yes; diff + 600-mode backup before replace; refuses lossy updates without --allow-lossy" },
     { "name": "invite", "tier": "write-gated", "gate": "tty", "surface": "cli", "note": "confirmInviteOnTty() on /dev/tty or --yes after preview; private-history disclosure named; each invitee's email shown" },
+    { "name": "add-emoji", "tier": "write-gated", "gate": "tty", "surface": "cli", "note": "confirmEmojiOnTty() on /dev/tty, or --yes after preview; a taken name is refused before the prompt; the undo is a human removing it in Customize Workspace" },
     { "name": "upload-file.mjs", "tier": "write-gated", "gate": "flag", "surface": "cli", "note": "--yes only — previews without it, no TTY prompt" },
     { "name": "create-channel", "tier": "write-gated", "gate": "typed-echo", "surface": "cli", "note": "confirmCreateOnTty(): type the channel name back at /dev/tty; no --yes, no bypass — agents get exit 2 and a staged command" },
     { "name": "delete message", "tier": "never", "surface": "cli", "note": "no chat.delete verb exists; an accidental post is edited down, not removed" },
@@ -200,7 +202,7 @@
     "destructive": true,
     "idempotent": false,
     "open_world": false,
-    "worst_case": "a message posted, edited, or a channel created in your company's Slack under the operator's name; a channel name can never be reclaimed, which is why create-channel is typed-echo with no --yes"
+    "worst_case": "a message posted, edited, a custom emoji added, or a channel created in your company's Slack under the operator's name; a channel name can never be reclaimed, which is why create-channel is typed-echo with no --yes"
   },
   "systems": [
     {

@@ -3,13 +3,13 @@
 ## Read first
 
 - **What:** your company's Slack, as you: a read-only MCP server and a CLI with reads, bulk
-  exports, a read-only file download, and six CLI-only write paths.
+  exports, a read-only file download, and seven CLI-only write paths.
 - **Configure:** `SLACK_WORKSPACE_URL=https://yourco.slack.com/` (or a 600-mode
   `~/.config/slack-cli/config.json`). `node cli.js whoami` confirms it before any network.
 - **Auth:** `node cli.js login` — a visible Chrome opens the workspace URL, you sign in however
   your company does, the session is cached to `~/.slack-cli-auth.json` (mode 600).
 - **First read:** `node cli.js channel <name-or-id> --max-pages 1`.
-- **Writes:** `send` / `react` / `edit` / `invite` — `--dry-run` preview → the human's yes →
+- **Writes:** `send` / `react` / `edit` / `invite` / `add-emoji` — `--dry-run` preview → the human's yes →
   re-run with `--yes`. `upload-file.mjs` — `--yes` only. `create-channel` — a human types the
   channel name back at `/dev/tty`; there is no agent path.
 - **The rule:** an agent never passes `--yes` or `--force` on its own. Show the preview, get the
@@ -22,7 +22,7 @@
 The Slack-CLI approach: one shared engine (`auth.js`, `lib/`) behind two surfaces. The **MCP
 server** (`server.js`) exposes only reads, so an agent session holds nothing that can post.
 The **CLI** (`cli.js`) has the same reads plus bulk exports and every write, each write tiered
-to its blast radius: reversible and single-target (`react`, `send`, `edit`, `invite`) preview
+to its blast radius: reversible (`react`, `send`, `edit`, `invite`, `add-emoji`) preview
 then confirm at `/dev/tty`, with `--yes` honored once a human has approved the preview;
 private-to-you (`upload-file.mjs`) is `--yes` only; irreversible (`create-channel`) requires the
 operator to type the channel name back and has no flag at all. Nothing here deletes, kicks,
@@ -87,6 +87,7 @@ node cli.js send <recipient> --file note.md --yes                    # after the
 node cli.js react <channel> <ts> --emoji eyes --dry-run              # then --yes
 node cli.js edit <channel> <ts> --append "…" --dry-run               # then --yes
 node cli.js invite <channel> <people...> --dry-run                   # then --yes
+node cli.js add-emoji <name> <image.png> --dry-run                  # then --yes
 node upload-file.mjs <recipient> --file img.png [--thread-ts <ts>] --dry-run   # then --yes
 node cli.js create-channel <name> [--private] --dry-run              # prints the command a human runs
 
@@ -107,6 +108,7 @@ node test.js             # unit tests, no network; --live adds integration tests
 | `react` | write-gated | preview → type `react`; `--yes`; `--remove` is the undo | exit 2 |
 | `edit` | write-gated | fetch + diff → type `edit`; `--yes`; backup written first; `--allow-lossy` to drop files/attachments | exit 2 |
 | `invite` | write-gated | preview names privacy + each invitee's email → type `invite`; `--yes` | exit 2 |
+| `add-emoji` | write-gated | preview checks format, size, name collision → type `emoji`; `--yes`; undo is a human in Customize Workspace | exit 2 |
 | `upload-file.mjs` | write-gated | `--yes` only; **no TTY prompt** | exit 0, nothing sent |
 | `create-channel` | write-gated | type the channel name back at `/dev/tty`; **no `--yes`, no bypass** | exit 2 + the staged command |
 | delete, kick, archive, rename, join | never | no verb exists | — |
@@ -120,13 +122,13 @@ node test.js             # unit tests, no network; --live adds integration tests
    (for example "react `:done:` to each message you process") counts as the yes.
 3. Re-run with `--yes`. Success prints JSON with `ts` and `permalink`; detect success by that,
    not by prose. Every mutation also emits an `EDIT_AUDIT` / `INVITE_AUDIT` / `REACT_AUDIT`
-   stderr line, and `create-channel` an `AUDIT` line.
+   stderr line, `add-emoji` an `EMOJI_AUDIT` line, and `create-channel` an `AUDIT` line.
 
 `create-channel` has no step 3 for an agent. Its `--dry-run` prints the exact command; hand that
 to the human to run in a real terminal window (not a piped `!` prefix — the typed-echo prompt
 needs a controlling terminal). Exit 2 is a missing acknowledgement, not a refusal.
 
-Never call `chat.postMessage`, `chat.update`, `conversations.invite`, or `conversations.create`
+Never call `chat.postMessage`, `chat.update`, `conversations.invite`, `emoji.add`, or `conversations.create`
 through `callSlackApi` directly. The identity checks, previews, backups, and audit lines live in
 the verbs.
 
@@ -147,6 +149,12 @@ the verbs.
 - `invite`: one `conversations.invite` per person; partial success is reported, never rolled
   back; `already_in_channel` counts as success (`alreadyMembers[]`), so a re-run is safe. A
   clean name resolve is not proof of the right person — the email in the preview is.
+- `add-emoji`: PNG, GIF or JPEG, at most 128 KB (Slack's limit, checked before any network).
+  Slack shows emoji at 128 px at most and usually at 22–32 px, so make a square 128×128 PNG with a
+  transparent background: downscale a large render with a filtering resize (Lanczos), never
+  nearest-neighbour, unless the art is pixel art on a grid. A name already in `emoji.list` is
+  refused before the prompt; `error_name_taken_i18n` means it collides with a standard emoji. A
+  workspace that restricts custom emoji to admins refuses the call.
 - Private channels usually need the `C…` id rather than `#name` — name resolution for private
   channels depends on `conversations.list`, which may be restricted (below).
 - Verify a delivery with `conversations.history`, not the `channel` export: search indexing

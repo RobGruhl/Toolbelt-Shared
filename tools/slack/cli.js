@@ -59,6 +59,7 @@ import {
   updateMessage,
 } from './lib/edit.js';
 import { confirmReactOnTty, setReaction } from './lib/react.js';
+import { validateEmojiName, inspectEmojiImage, lookupEmojiName, confirmEmojiOnTty, addEmoji } from './lib/emoji.js';
 import {
   validateInviteTarget,
   describeChannel,
@@ -66,6 +67,7 @@ import {
   confirmInviteOnTty,
   inviteToChannel,
   explainInviteError,
+  slackErrorCode,
 } from './lib/invite.js';
 import {
   validateChannelName,
@@ -1230,6 +1232,93 @@ program
       }, null, 2));
     } catch (error) {
       console.error(`[react] Error: ${error.message}`);
+      process.exit(1);
+    }
+  });
+
+// add-emoji command — upload a custom emoji to the workspace. Everyone sees
+// it and it claims a name, but the uploader can remove it in the Slack UI,
+// so per SENSIBILITIES #2 it takes the send-tier gate: preview (format,
+// size, whether the name is taken), TTY confirm, --yes honored after the
+// user has approved. No remove verb: that undo stays a human click.
+// CLI-only; never exposed on the MCP surface.
+program
+  .command('add-emoji <name> <image>')
+  .description('Add a custom emoji (PNG, GIF or JPEG, <= 128 KB, ideally 128x128) to the workspace as you. '
+    + 'Prompts for confirmation at the terminal; use --dry-run to preview, '
+    + 'or --yes to skip the prompt after the user has approved.')
+  .option('--dry-run', 'Validate the image, check the name, and show the preview, but never prompt or upload')
+  .option('--yes', 'Skip the confirmation prompt — only after the user has approved')
+  .action(async (rawName, image, opts) => {
+    try {
+      const { name, error } = validateEmojiName(rawName);
+      if (error) {
+        console.error(`[add-emoji] ${error}`);
+        process.exit(1);
+      }
+      let bytes;
+      try {
+        bytes = readFileSync(image);
+      } catch (e) {
+        console.error(`[add-emoji] Cannot read ${image}: ${e.message}`);
+        process.exit(1);
+      }
+      const info = inspectEmojiImage(bytes);
+      if (info.errors.length) {
+        for (const e of info.errors) console.error(`[add-emoji] ${image}: ${e}`);
+        process.exit(1);
+      }
+
+      const auth = await getAuth();
+      const existing = await lookupEmojiName(name, auth.cookies, auth.token);
+      const dims = info.width ? `${info.width}x${info.height}` : 'unknown size';
+
+      console.error('');
+      console.error('── add-emoji preview ────────────────────────────');
+      console.error(`Workspace: ${getWorkspaceUrl()}`);
+      console.error(`Name:      :${name}:`);
+      console.error(`Image:     ${image}`);
+      console.error(`           ${info.format}, ${dims}, ${(info.bytes / 1024).toFixed(1)} KB`);
+      for (const w of info.warnings) console.error(`  note:    ${w}`);
+      console.error(`Name free: ${existing.taken === null ? `unknown (emoji.list failed: ${existing.error})` : existing.taken ? 'NO' : 'yes'}`);
+      console.error('─────────────────────────────────────────────────');
+
+      if (existing.taken) {
+        console.error(`[add-emoji] :${name}: already exists in this workspace (${existing.value}). Pick another name.`);
+        process.exit(1);
+      }
+
+      if (opts.dryRun) {
+        console.error('[add-emoji] Dry run — nothing changed. Re-run with --yes once the user approves.');
+        process.exit(0);
+      }
+
+      if (!opts.yes) {
+        const confirmed = await confirmEmojiOnTty(`Add :${name}: to the workspace`);
+        if (confirmed === null) {
+          console.error('[add-emoji] No interactive terminal. Check with the user first, then re-run with --yes —');
+          console.error('[add-emoji] or have them run this command themselves (in Claude Code, prefix it with `!`).');
+          process.exit(2);
+        }
+        if (!confirmed) {
+          console.error('[add-emoji] Aborted — nothing changed.');
+          process.exit(1);
+        }
+      }
+
+      await addEmoji(name, bytes, info, auth.cookies, auth.token);
+      console.error(`EMOJI_AUDIT ${new Date().toISOString()} add :${name}: ${info.format} ${info.bytes}B from ${image}`);
+      console.log(JSON.stringify({ ok: true, emoji: name, format: info.format, bytes: info.bytes }, null, 2));
+    } catch (error) {
+      const code = slackErrorCode(error);
+      const hint = {
+        error_name_taken: 'the name is already a custom emoji or alias',
+        error_name_taken_i18n: 'the name is already a standard emoji',
+        error_too_big: 'the image is over Slack\'s size limit',
+        not_allowed: 'this workspace limits custom emoji to admins',
+        admin_only: 'this workspace limits custom emoji to admins',
+      }[code];
+      console.error(`[add-emoji] Error: ${error.message}${hint ? ` — ${hint}` : ''}`);
       process.exit(1);
     }
   });
