@@ -39,8 +39,8 @@ page disagree, the page wins and this file gets rewritten.
   custom constraints: max edge 3840px, edges multiples of 16, aspect <= 3:1, total pixels
   655,360–8,294,400. Above 2560x1440 is experimental. Custom sizes apply to edits too.
 - `quality`: `low` | `medium` | `high` | `auto` (default `auto`).
-- `background`: `transparent` | `opaque` | `auto`. Transparent is preview on `gpt-image-2` and
-  requires `png` or `webp`.
+- `background`: `transparent` | `opaque` | `auto`. Transparent works on the gpt-image-1.x models
+  only and requires `png` or `webp`; `gpt-image-2` rejects it with HTTP 400.
 - `output_format`: `png` (default) | `jpeg` | `webp`; `output_compression` 0–100 (jpeg/webp
   only, default 100).
 - `moderation`: `auto` (default) | `low`. A blocked request returns
@@ -113,7 +113,8 @@ Source: https://developers.openai.com/cookbook/examples/multimodal/image-gen-mod
 - Photorealism: say "photorealistic", use camera language (lens, lighting, depth of field,
   grain), ask for real texture and "no glamorization, no heavy retouching".
 - Logos: describe brand personality and use, ask for a strong silhouette and negative space,
-  `background: transparent` + `png`, `n: 4` for variants.
+  a plain solid background keyed out locally (or `gpt-image-1.5` with `background: transparent`
+  + `png`), `n: 4` for variants.
 - UI mockups: describe the product as if shipped (layout, hierarchy, spacing, real controls),
   not as concept art.
 - Multi-image inputs: refer to them by index and description ("apply Image 2's style to

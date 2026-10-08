@@ -52,9 +52,9 @@ await generate(prompt, { format: 'jpeg', compression: 70 });
 |---|---|
 | `auto` | Model picks |
 | `opaque` | Always solid background |
-| `transparent` | Alpha background. **Preview on gpt-image-2**; requires `format: 'png'` or `'webp'`. Stable on gpt-image-1.x. |
+| `transparent` | Alpha background on gpt-image-1.5 / 1 / 1-mini only; requires `format: 'png'` or `'webp'`. **gpt-image-2 answers it with HTTP 400** ("Transparent background is not supported for this model"), and `oimg` refuses the combination at preview. |
 
-If a transparent render comes back opaque, re-run on `gpt-image-1` or post-process with `rembg`/similar.
+For alpha on gpt-image-2, render on a plain solid background and key it out locally (`07-compositing-print-tricks.md` §1).
 
 ## Moderation
 

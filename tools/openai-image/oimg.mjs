@@ -94,7 +94,7 @@ options
   --quality <q>          low|medium|high|auto, default ${DEFAULT_QUALITY}
   --format <f>           png|jpeg|webp, default ${DEFAULT_FORMAT}
   --compression <0-100>  jpeg/webp only
-  --background <b>       auto|opaque|transparent (transparent: png/webp only; preview on gpt-image-2)
+  --background <b>       auto|opaque|transparent (transparent: gpt-image-1.x, png/webp only)
   --moderation <m>       auto|low (generate only)
   --input-fidelity <f>   high|low; gpt-image-1.x edits only, dropped for gpt-image-2
   -n, --n <1-${MAX_N}>          images per call; ceiling is a code constant

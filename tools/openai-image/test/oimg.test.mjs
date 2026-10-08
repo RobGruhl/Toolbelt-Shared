@@ -49,10 +49,13 @@ test('estimateCost: gpt-image-2 is calibrated to observed tokens (7,024 / 5,488 
   assert.equal(estimateCost({ model: 'dall-e-2' }).total, null);
 });
 
-test('request builders: gpt-image-2 drops input_fidelity; transparent needs png/webp', () => {
+test('request builders: gpt-image-2 drops input_fidelity and refuses transparent; transparent needs png/webp', () => {
   assert.equal(buildEditRequest('p', { model: 'gpt-image-2', inputFidelity: 'high' }).input_fidelity, undefined);
   assert.equal(buildEditRequest('p', { model: 'gpt-image-1.5', inputFidelity: 'high' }).input_fidelity, 'high');
-  assert.throws(() => buildGenerateRequest('p', { background: 'transparent', format: 'jpeg' }), /png or webp/);
+  assert.throws(() => buildGenerateRequest('p', { model: 'gpt-image-1.5', background: 'transparent', format: 'jpeg' }), /png or webp/);
+  assert.throws(() => buildGenerateRequest('p', { background: 'transparent', format: 'png' }), /not supported by gpt-image-2/);
+  assert.throws(() => buildEditRequest('p', { background: 'transparent' }), /not supported by gpt-image-2/);
+  assert.equal(buildGenerateRequest('p', { model: 'gpt-image-1.5', background: 'transparent', format: 'png' }).background, 'transparent');
   const r = buildResponsesRequest('p', { previousResponseId: 'resp_1', action: 'edit' });
   assert.equal(r.previous_response_id, 'resp_1');
   assert.equal(r.tools[0].action, 'edit');

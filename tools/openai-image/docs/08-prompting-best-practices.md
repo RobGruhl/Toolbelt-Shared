@@ -95,7 +95,7 @@ Constraints:
 | Virtual try-on | "Do not change face, body shape, pose, hair, expression." Only garments change; require realistic fit + consistent lighting/shadows. |
 | Sketch → render | "Preserve exact layout, proportions, perspective. Do not add new elements or text." Add realism via materials/lighting. |
 | Lighting/weather | Change only environmental conditions; "preserve identity, geometry, camera angle, object placement." |
-| Product mockup | "Centered product, crisp silhouette, no halos/fringing. Preserve product geometry and label legibility exactly." Use an opaque background unless the deliverable needs alpha (`background: 'transparent'` is preview on gpt-image-2 and needs png/webp — see `03-sizes-quality-formats.md`). |
+| Product mockup | "Centered product, crisp silhouette, no halos/fringing. Preserve product geometry and label legibility exactly." Use an opaque background unless the deliverable needs alpha (gpt-image-2 has no transparent output; key a solid background out locally — see `03-sizes-quality-formats.md`). |
 | Style transfer | Describe what stays (visual language, palette, texture) vs. what changes (subject/scene). Name concrete components — "chunky pixel forms, limited arcade palette, bright glow accents" — not "same style". |
 
 ## Multi-image inputs

@@ -22,6 +22,7 @@ import {
   DEFAULT_IMAGE_MODEL,
   DEFAULT_RESPONSES_MODEL,
   INPUT_FIDELITY_MODELS,
+  TRANSPARENT_MODELS,
   PRICING,
   SIZE_CONSTRAINTS,
 } from './constants.js';
@@ -116,10 +117,24 @@ export function buildGenerateRequest(prompt, opts = {}) {
   if (opts.background)   req.background = opts.background;
   if (opts.moderation)   req.moderation = opts.moderation;
   if (opts.n)            req.n = opts.n;
-  if (opts.background === 'transparent' && req.output_format && !['png', 'webp'].includes(req.output_format)) {
+  checkTransparent(req);
+  return req;
+}
+
+/**
+ * Refuse a transparent request the API would 400, before it is sent.
+ * gpt-image-2 has no alpha output: render it on a plain solid background and
+ * key that out locally, or pass a TRANSPARENT_MODELS model.
+ */
+function checkTransparent(req) {
+  if (req.background !== 'transparent') return;
+  if (!TRANSPARENT_MODELS.has(req.model)) {
+    throw new Error(`background transparent is not supported by ${req.model}; use --model ${[...TRANSPARENT_MODELS][0]}, `
+      + 'or render on a plain solid background and key it out (docs/07-compositing-print-tricks.md)');
+  }
+  if (req.output_format && !['png', 'webp'].includes(req.output_format)) {
     throw new Error('background transparent requires output_format png or webp');
   }
-  return req;
 }
 
 /** The edit request minus the file streams (those are attached at call time). Pure. */
@@ -133,6 +148,7 @@ export function buildEditRequest(prompt, opts = {}) {
   if (opts.n)            req.n = opts.n;
   // gpt-image-2 is always high fidelity and rejects the parameter.
   if (opts.inputFidelity && INPUT_FIDELITY_MODELS.has(req.model)) req.input_fidelity = opts.inputFidelity;
+  checkTransparent(req);
   return req;
 }
 

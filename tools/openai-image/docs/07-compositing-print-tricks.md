@@ -16,7 +16,24 @@ Field notes from turning gpt-image-2 output into print-ready art (Apollo 13 exhi
 - **Big-image ops are slow.** 155 MP (10800×14400) sharpen/composite runs 30 s–3 min and
   eats RAM — run them with `run_in_background`.
 
-## 1. Keying gpt-image-2's "black" backgrounds — measure, don't threshold
+## 1. Keying gpt-image-2's backgrounds
+
+gpt-image-2 has no transparent output (`background: transparent` is HTTP 400), so alpha is made
+here. Which method works depends on the art.
+
+**Outlined art (stickers, emoji, icons) on white: flood-fill from the corner.** A bold dark
+outline stops the fill, so white inside the subject (eyes, highlights) survives. Pad by one
+pixel first so the fill reaches every edge region, then shave it off:
+
+```bash
+magick in.png -alpha set -bordercolor white -border 1 -fuzz 12% -fill none \
+       -draw "color 0,0 floodfill" -shave 1x1 -trim +repage out.png
+```
+
+White pockets fully enclosed by the outline (gaps between spires, say) stay white; check the
+result flattened on a dark background.
+
+**Unoutlined art on black: measure, don't threshold.**
 
 gpt-image-2 renders a requested "pure black background" as a **uniform tinted off-black**,
 not `#000000`. A trophy asked for "on pure flat black" came back on `srgb(102,75,26)` (a
@@ -31,8 +48,8 @@ magick keyed.png \( +clone -alpha extract -morphology Close Disk:1.5 -blur 0x1.2
        -alpha off -compose CopyOpacity -composite -trim +repage cut.png
 ```
 
-Threshold/black-threshold/floodfill all fought me here; **measure + `-fuzz -transparent`** was
-the reliable fix. (Also note: `-draw "alpha x,y floodfill"` is rejected by this build.)
+Without an outline, threshold, black-threshold and floodfill all leave halos;
+**measure + `-fuzz -transparent`** is the reliable fix. (Also note: `-draw "alpha x,y floodfill"` is rejected by this build.)
 
 ## 2. Recolor one grayscale asset into many "metals" (duotone CLUT)
 

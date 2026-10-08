@@ -76,8 +76,16 @@ export const FORMAT = {
 export const BACKGROUND = {
   AUTO: 'auto',
   OPAQUE: 'opaque',
-  TRANSPARENT: 'transparent', // preview on gpt-image-2; requires png or webp
+  TRANSPARENT: 'transparent', // TRANSPARENT_MODELS only; requires png or webp
 };
+
+// Models that return a real alpha channel. gpt-image-2 answers background=transparent with
+// HTTP 400 "Transparent background is not supported for this model".
+export const TRANSPARENT_MODELS = new Set([
+  IMAGE_MODELS.GPT_IMAGE_1_5,
+  IMAGE_MODELS.GPT_IMAGE_1,
+  IMAGE_MODELS.GPT_IMAGE_1_MINI,
+]);
 
 export const MODERATION = {
   AUTO: 'auto',     // default

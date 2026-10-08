@@ -97,8 +97,10 @@ usage when the API returns it.
 
 - **`input_fidelity` is rejected by `gpt-image-2`** (always high). `buildEditRequest` drops it
   for that model and keeps it for `gpt-image-1.5` / `1` / `1-mini`.
-- **`--background transparent`** is preview on `gpt-image-2` and needs `png` or `webp`; a jpeg
-  request is refused before the call. An opaque result means fall back to `gpt-image-1`.
+- **`gpt-image-2` has no transparent output.** The API answers `background: transparent` with
+  HTTP 400, so oimg refuses it at preview (exit 2). For alpha, render on a plain solid white
+  background and key it out locally (`docs/07-compositing-print-tricks.md` §1), or pass
+  `--model gpt-image-1.5`. Transparent also needs `png` or `webp`.
 - **Masks need an alpha channel** the same size as the first `--image`; transparent pixels are
   repainted. Describe the change in the prompt too — masking is prompt-guided.
 - **Sizes** must be `auto` or `WxH` with edges multiples of 16, max edge 3840, ratio <= 3:1,
