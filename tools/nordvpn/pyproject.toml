@@ -12,7 +12,7 @@ httpx = "^0.28"
 typer = {extras = ["all"], version = "^0.15"}
 pydantic = "^2.0"
 python-dotenv = "^1.0"
-rich = "^13.0"
+rich = ">=13,<16"
 
 [tool.poetry.scripts]
 nordvpn = "nordvpn.__main__:main"
