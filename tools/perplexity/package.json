@@ -12,6 +12,6 @@
     "agent": "node examples/11-agent-claude.js"
   },
   "dependencies": {
-    "dotenv": "^16.4.7"
+    "dotenv": "^18.0.5"
   }
 }
