@@ -12,6 +12,6 @@
   },
   "dependencies": {
     "@danielxceron/youtube-transcript": "^1.2.6",
-    "dotenv": "^16.4.7"
+    "dotenv": "^18.0.5"
   }
 }
